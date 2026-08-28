@@ -1,0 +1,49 @@
+plugins {
+    id 'java'
+}
+
+version = project.plugin_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    // 阿里云镜像代替 Maven Central（本机直连 central 超时）。
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    // Paper 官方仓库：本机实测必须直连（走 7890 代理会握手失败）。
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+}
+
+// Shared sources: `core` is the platform-independent room engine + protocol,
+// `paper-common` is the Bukkit adapter shared by every Paper version.
+// This project itself contributes no Java — only plugin.yml + the toolchain settings.
+sourceSets {
+    main {
+        java.srcDirs += ['../core/src/main/java', '../paper-common/src/main/java']
+    }
+}
+
+dependencies {
+    compileOnly "io.papermc.paper:paper-api:${project.paper_api}"
+}
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'api_version', project.api_version
+    filteringCharset 'UTF-8'
+
+    filesMatching('plugin.yml') {
+        expand 'version': project.version, 'api_version': project.api_version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.encoding = 'UTF-8'
+    it.options.release.set(Integer.parseInt(project.java_release))
+}
+
+java {
+    withSourcesJar()
+}
