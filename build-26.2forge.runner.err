@@ -1,0 +1,4 @@
+C:\Users\user\Desktop\mpsync-main\fast-build.ps1 : 找不到接受实际参数“Files\Zulu\zulu-25”的位置形式参数。
+    + CategoryInfo          : InvalidArgument: (:) [fast-build.ps1]，ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : PositionalParameterNotFound,fast-build.ps1
+ 

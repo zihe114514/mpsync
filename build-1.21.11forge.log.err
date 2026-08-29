@@ -1,0 +1,20 @@
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':compileJava'.
+> Could not resolve all files for configuration ':compileClasspath'.
+   > Could not find net.minecraftforge:forge:1.21.11-61.2.1_mapped_official_1.21.11.
+     Searched in the following locations:
+       - file:/C:/Users/user/.gradle/caches/forge_gradle/bundeled_repo/net/minecraftforge/forge/1.21.11-61.2.1_mapped_official_1.21.11/forge-1.21.11-61.2.1_mapped_official_1.21.11.pom
+       - file:/C:/Users/user/.gradle/caches/forge_gradle/bundeled_repo/net/minecraftforge/forge/1.21.11-61.2.1_mapped_official_1.21.11/forge-1.21.11-61.2.1_mapped_official_1.21.11.jar
+     Required by:
+         root project :
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 2m 18s

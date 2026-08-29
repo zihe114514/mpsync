@@ -1,0 +1,72 @@
+plugins {
+    id 'java-library'
+    id 'idea'
+    id 'net.neoforged.moddev' version '2.0.144'
+}
+
+version = mod_version
+group = mod_group_id
+base { archivesName = archives_base_name }
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+def centralHosts = ['repo.maven.apache.org', 'repo1.maven.org', 'repo.maven.org'] as Set
+repositories.all { repo ->
+    if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository
+            && repo.url != null && centralHosts.contains(repo.url.host)) {
+        repo.url = uri('https://maven.aliyun.com/repository/public')
+    }
+}
+
+repositories {
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    maven { url = 'https://bmclapi2.bangbang93.com/maven/' }
+    maven { url = 'https://maven.neoforged.net/releases' }
+}
+
+sourceSets {
+    main {
+        java.srcDirs += ['../core/src/main/java', '../neoforge-common/src/main/java']
+    }
+}
+
+neoForge {
+    version = project.neo_version
+    runs {
+        server {
+            server()
+            programArgument '--nogui'
+        }
+        client { client() }
+        configureEach { logLevel = org.slf4j.event.Level.INFO }
+    }
+    mods {
+        "${mod_id}" { sourceSet(sourceSets.main) }
+    }
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+            neo_version: neo_version, neo_version_range: neo_version_range,
+            loader_version_range: loader_version_range,
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_authors: mod_authors, mod_description: mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+neoFormRuntime {
+    launcherManifestUrl = 'http://127.0.0.1:18765/version_manifest_v2.json'
+    verbose = true
+}

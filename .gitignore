@@ -1,0 +1,49 @@
+# Gradle
+.gradle/
+build/
+!**/gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.classpath
+*.project
+.settings/
+
+# Minecraft 运行目录（世界存档、日志、玩家数据、第三方 mod jar）
+run/
+logs/
+crash-reports/
+*.log
+
+# 构建产物
+*.jar
+!**/gradle/wrapper/gradle-wrapper.jar
+*.class
+
+# 历史工程里那个空的嵌套仓库
+服务端/.git.disabled/
+
+# 本地镜像 / 临时工具 / MDK 缓存（体积大，不入库）
+mirror/
+.tools/
+_mdk_tmp/
+
+# 本地构建/运行辅助脚本产生的日志与 pid
+build-*.log
+build-*.log.err
+build-*.pid
+build-*.pid2
+build-*.runner.log
+build-*.runner.err
+run-*.log
+mirror-server.log*
+*.pid
+
+# 系统
+Thumbs.db
+desktop.ini
+.DS_Store

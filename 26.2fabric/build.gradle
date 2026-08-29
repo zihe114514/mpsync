@@ -1,0 +1,64 @@
+plugins {
+    // 26.x 起 plugin id 是 net.fabricmc.fabric-loom；钉死在本机缓存里支持「无映射」工程的版本。
+    id 'net.fabricmc.fabric-loom' version '1.17.20'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+// central 在本机既不能直连也不能走代理，统一改写到阿里云（与 C:/MUSIC 各工程一致）。
+def centralHosts = ['repo.maven.apache.org', 'repo1.maven.org', 'repo.maven.org'] as Set
+def retargetCentral = { repo ->
+    if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository
+            && repo.url != null && centralHosts.contains(repo.url.host)) {
+        repo.url = 'https://maven.aliyun.com/repository/public'
+    }
+}
+repositories.all(retargetCentral)
+buildscript.repositories.all(retargetCentral)
+
+repositories {
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+}
+
+// 只共享与 Minecraft 无关的 core：26.x 用官方类名，Yarn 名的 fabric-common 在这里编不过，
+// 所以本工程自带一份适配层（OfficialPlatform / MpPayloads / MpNet / MpCommands）。
+sourceSets {
+    main {
+        java.srcDirs += ['../core/src/main/java']
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    // 没有 mappings：官方 jar 不混淆；loader / fabric-api 因此用 implementation 而非 modImplementation。
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+processResources {
+    inputs.property "version", project.version
+    inputs.property "minecraft_version", project.minecraft_version
+    inputs.property "loader_min_version", project.loader_min_version
+    filteringCharset "UTF-8"
+
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version,
+                "minecraft_version": project.minecraft_version,
+                "loader_min_version": project.loader_min_version
+    }
+}
+
+def targetJavaVersion = 25
+tasks.withType(JavaCompile).configureEach {
+    it.options.encoding = 'UTF-8'
+    it.options.release.set(targetJavaVersion)
+}
+
+java {
+    withSourcesJar()
+}

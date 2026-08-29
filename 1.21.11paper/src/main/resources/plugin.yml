@@ -1,0 +1,14 @@
+name: MusicParty
+version: '${version}'
+main: yun.shan.mpsync.paper.MusicPartyPlugin
+api-version: '${api_version}'
+description: 服务器托管的一起听房间（仅搬运元数据与时钟，不搬运音频）
+authors: [yun.shan]
+commands:
+  mp:
+    description: 一起听房间指令
+    usage: /mp help
+permissions:
+  mpsync.admin:
+    description: 查看服务器上所有一起听房间
+    default: op
