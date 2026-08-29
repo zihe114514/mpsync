@@ -3,18 +3,25 @@ package yun.shan.mpsync.room;
 import com.google.gson.JsonObject;
 import yun.shan.mpsync.config.MpConfig;
 import yun.shan.mpsync.net.Proto;
-import yun.shan.mpsync.util.NeteaseGuard;
+import yun.shan.mpsync.util.SourceGuard;
 
 /**
- * A NetEase song as uploaded by a client: metadata plus the stream URL the uploader
- * resolved with its own session. The server stores it verbatim and never fetches audio.
+ * 一首由客户端上传的歌：元数据 + 点歌人用自己会话解析出来的取流直链。服务端原样保存，
+ * 从不自己去取音频，也不关心是哪个平台 —— 全房共用点歌人那一条链接，这就是它能同时支持
+ * 网易云 / QQ / 酷狗 / GD 的原因。
  *
- * <p>Stream URLs are short-lived (NetEase signs them), hence {@link #urlExpiresAt}:
- * when a queued track reaches the front with a stale URL the room asks a client to
- * re-resolve it ({@link Proto#S_URL_NEEDED}) instead of pushing a dead link.
+ * <p>直链是有签名有效期的，所以有 {@link #urlExpiresAt}：队列里的歌轮到播放时如果链接已过期，
+ * 房间会发 {@link Proto#S_URL_NEEDED} 找客户端重新解析，而不是把一条死链推出去。能应答的只有
+ * 装了对应平台并已登录的成员 —— 这是共享直链模型的固有边界。
+ *
+ * <p>身份是 {@link #key()}（{@code source:songId}）而不是单独的 {@code songId}：跨平台之后
+ * 不同平台完全可能出现相同的数字 id，只按 songId 比会让两首歌撞成一首，去重把第二首拒了，
+ * 更糟的是 {@code url_supply} 会把 A 平台的链接塞进 B 平台的曲目里。
  */
 public final class Track {
 
+    /** 平台令牌，见 {@link Proto#isValidSource}。 */
+    public final String source;
     public final String songId;
     public String name;
     public String artist;
@@ -28,31 +35,38 @@ public final class Track {
      *  0 when unknown. Shorter than {@link #durationMs} means a VIP trial clip. */
     public long urlDurationMs;
 
-    public Track(String songId) {
+    public Track(String source, String songId) {
+        this.source = source;
         this.songId = songId;
+    }
+
+    /** 跨平台唯一的曲目身份。 */
+    public String key() {
+        return source + ":" + songId;
     }
 
     /**
      * Validate + adopt a client-supplied track object.
      *
-     * @throws IllegalArgumentException with a user-facing (Chinese) reason when the
-     *         payload is not an acceptable NetEase track.
+     * @throws IllegalArgumentException 带一句面向用户的中文原因，说明这份负载为什么不能入队。
      */
     public static Track fromJson(JsonObject o, MpConfig cfg) {
         if (o == null) throw new IllegalArgumentException("缺少歌曲信息");
-        String source = Proto.str(o, "source", Proto.SOURCE_NETEASE);
-        if (!Proto.SOURCE_NETEASE.equalsIgnoreCase(source)) {
-            throw new IllegalArgumentException("仅支持网易云音乐播放源");
+        // 老客户端不发 source，按网易云处理。
+        String source = Proto.str(o, "source", Proto.SOURCE_NETEASE).trim().toLowerCase(java.util.Locale.ROOT);
+        if (!Proto.isValidSource(source)) throw new IllegalArgumentException("无效的播放源标识");
+        if (!cfg.isSourceAllowed(source)) {
+            throw new IllegalArgumentException("服务器未开放该播放源：" + source);
         }
         String songId = Proto.str(o, "songId", "").trim();
-        if (!NeteaseGuard.isNeteaseId(songId)) throw new IllegalArgumentException("无效的网易云歌曲 ID");
+        if (!SourceGuard.isValidSongId(songId)) throw new IllegalArgumentException("无效的歌曲 ID");
 
-        Track t = new Track(songId);
+        Track t = new Track(source, songId);
         t.name = clip(Proto.str(o, "name", "未知歌曲"), 120);
         t.artist = clip(Proto.str(o, "artist", ""), 120);
         t.album = clip(Proto.str(o, "album", ""), 120);
         String cover = Proto.str(o, "cover", "");
-        t.cover = NeteaseGuard.isAllowedUrl(cover, cfg.allowedHosts) ? cover : "";
+        t.cover = SourceGuard.isAllowedUrl(cover, cfg.allowedHosts) ? cover : "";
         t.durationMs = Math.max(0L, Proto.num(o, "duration", 0L));
         String url = Proto.str(o, "url", "");
         long served = Proto.num(o, "urlDuration", 0L);
@@ -73,7 +87,7 @@ public final class Track {
      */
     public boolean adoptUrl(String url, long expiresAt, long servedDurationMs, MpConfig cfg) {
         boolean ok = url != null && !url.isBlank()
-                && NeteaseGuard.isAllowedUrl(url, cfg.allowedHosts)
+                && SourceGuard.isAllowedUrl(url, cfg.allowedHosts)
                 && !isTrialClip(servedDurationMs, durationMs, cfg);
         if (ok) {
             this.url = url;
@@ -112,7 +126,7 @@ public final class Track {
 
     public JsonObject toJson(boolean withUrl) {
         JsonObject o = new JsonObject();
-        o.addProperty("source", Proto.SOURCE_NETEASE);
+        o.addProperty("source", source);
         o.addProperty("songId", songId);
         o.addProperty("name", name);
         o.addProperty("artist", artist);

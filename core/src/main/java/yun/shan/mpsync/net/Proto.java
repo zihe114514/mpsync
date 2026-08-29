@@ -42,8 +42,30 @@ public final class Proto {
     /** Hard cap on a single frame (a room snapshot with a long queue stays far below). */
     public static final int MAX_FRAME = 512 * 1024;
 
-    /** Only source accepted for tracks. */
+    /**
+     * 曲目来源平台令牌。
+     *
+     * <p>以前只接受 {@code netease}。现在服务端只做「转发点歌人解析出来的直链」这件事，
+     * 平台本身对服务端没有意义 —— 它既不解析也不取流。所以这里不再枚举白名单，只校验令牌
+     * 格式，实际允许哪些平台由 {@code MpConfig.allowedSources} 决定。</p>
+     *
+     * <p>缺省值仍是 {@code netease}：老客户端不发 {@code source} 字段，必须继续当网易云处理。</p>
+     */
     public static final String SOURCE_NETEASE = "netease";
+    public static final String SOURCE_QQ      = "qq";
+    public static final String SOURCE_KUGOU   = "kugou";
+    public static final String SOURCE_GD      = "gd";
+
+    /** 令牌格式：小写字母、数字、下划线，1~16 位。用来做键，所以不能含分隔符。 */
+    public static boolean isValidSource(String source) {
+        if (source == null || source.isEmpty() || source.length() > 16) return false;
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            boolean ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+            if (!ok) return false;
+        }
+        return true;
+    }
 
     // ── C2S ops ──────────────────────────────────────────────────────────────
     public static final String C_HELLO       = "hello";

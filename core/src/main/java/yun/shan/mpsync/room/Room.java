@@ -194,7 +194,8 @@ public final class Room {
             throw new IllegalStateException("你的排队歌曲已达上限（" + cfg.maxQueuePerMember + " 首）");
         }
         for (QueueEntry e : queue) {
-            if (e.track.songId.equals(track.songId)) throw new IllegalStateException("这首歌已经在队列里了");
+            // 按 source:songId 比，而不是只比 songId：跨平台之后不同平台会撞到相同的数字 id。
+            if (e.track.key().equals(track.key())) throw new IllegalStateException("这首歌已经在队列里了");
         }
         QueueEntry entry = new QueueEntry(track, uuid, name);
         if (playNext && controls(uuid)) queue.add(0, entry);
@@ -203,6 +204,15 @@ public final class Room {
             startEntry(pollFront(entry), 0L);
         } else {
             broadcastQueue();
+            if (!entry.track.hasFreshUrl()) {
+                // 点歌人本机解析不出完整音频（多半是会员曲而他不是会员），所以这首歌是「裸」进
+                // 队的。现在就静默向全房要一条，而不是等轮到它才要 —— 那时房间会真的卡住
+                // urlWaitTimeoutMs 那么久，运气不好直接被跳过。
+                //
+                // 必须放在 broadcastQueue() 之后：非网易云平台的客户端要靠歌单快照里的元数据
+                // 才能重建曲目去解析，快照还没到就只能沉默。
+                requestUrl(entry, true);
+            }
         }
         return entry;
     }
@@ -252,7 +262,7 @@ public final class Room {
     /** Owner/admin free switch: play this track right now, ahead of the queue. */
     public void playNow(UUID actor, String actorName, Track track) {
         QueueEntry entry = new QueueEntry(track, actor, actorName);
-        queue.removeIf(e -> e.track.songId.equals(track.songId));
+        queue.removeIf(e -> e.track.key().equals(track.key()));
         startEntry(entry, 0L);
     }
 
@@ -336,19 +346,31 @@ public final class Room {
     }
 
     /**
-     * Ask clients to (re-)resolve a stream URL.
+     * 让客户端（重新）解析一条取流链接。
      *
-     * @param quiet true for a pre-emptive refresh while playback continues — no chat
-     *              notice, because nothing is actually stalled
+     * <p>这是「非会员点歌，房间里的会员代为解析」的实现：服务端自己没有任何平台会话，所有链接
+     * 都来自成员。收到请求的客户端只有在能解析出<b>完整</b>音频时才应答 —— 非会员解析到试听
+     * 片段会主动沉默，所以最终被采纳的一定是某个会员成员的链接。</p>
+     *
+     * @param quiet 播放未中断时的预解析／续签走 true —— 不发聊天提示，因为并没有卡住
      */
     private void requestUrl(QueueEntry entry, boolean quiet) {
         JsonObject m = Proto.msg(Proto.S_URL_NEEDED);
+        // 带上 source：客户端要据此决定用哪个平台的会话去重新解析，也用于确认这条应答是给
+        // 这首歌的。老客户端不读这个字段，行为不变。
+        m.addProperty("source", entry.track.source);
         m.addProperty("songId", entry.track.songId);
         m.addProperty("name", entry.track.name);
-        // Ask the requester first (their session found the song once already), then any
-        // controller, then everyone — whoever answers first wins.
+        // 先问点歌人（他的会话至少找到过这首歌），再问管理者，最后问所有人；谁先答上算谁的。
+        //
+        // 例外：曲目压根没有链接，说明点歌人刚刚已经试过并且失败了（非会员只解析到试听片段，
+        // 客户端会保持沉默）。这种情况下把他排到最后，让可能是会员的其他成员先答，省掉一次
+        // 注定无用的往返。
+        boolean requesterAlreadyFailed = !entry.track.hasFreshUrl();
         List<UUID> targets = new ArrayList<>();
-        if (entry.requester != null && members.containsKey(entry.requester)) targets.add(entry.requester);
+        if (!requesterAlreadyFailed && entry.requester != null && members.containsKey(entry.requester)) {
+            targets.add(entry.requester);
+        }
         for (Member mem : members.values()) if (mem.role.controls() && !targets.contains(mem.uuid)) targets.add(mem.uuid);
         for (Member mem : members.values()) if (!targets.contains(mem.uuid)) targets.add(mem.uuid);
         for (UUID uuid : targets) send(uuid, m);
@@ -363,10 +385,12 @@ public final class Room {
      * all members. A rejected answer changes nothing and the room keeps waiting, giving a
      * member who can resolve the full track a chance to answer.
      */
-    public void supplyUrl(String songId, String url, long expiresAt, long servedDurationMs) {
+    public void supplyUrl(String source, String songId, String url, long expiresAt, long servedDurationMs) {
         if (songId == null) return;
+        // 老客户端的 url_supply 不带 source，按网易云处理。
+        String key = (source == null || source.isBlank() ? Proto.SOURCE_NETEASE : source) + ":" + songId;
         boolean touched = false;
-        if (current != null && current.track.songId.equals(songId)) {
+        if (current != null && current.track.key().equals(key)) {
             boolean wasStalled = waitingUrl;
             if (!current.track.adoptUrl(url, expiresAt, servedDurationMs, cfg)) return;
             if (current.track.hasFreshUrl() && wasStalled) {
@@ -384,7 +408,7 @@ public final class Room {
             touched = true;
         }
         for (QueueEntry e : queue) {
-            if (e.track.songId.equals(songId) && !e.track.hasFreshUrl()
+            if (e.track.key().equals(key) && !e.track.hasFreshUrl()
                     && e.track.adoptUrl(url, expiresAt, servedDurationMs, cfg)) {
                 touched = true;
             }
@@ -504,7 +528,9 @@ public final class Room {
         if (waitingUrl && now - waitingSince > cfg.urlWaitTimeoutMs) {
             waitingUrl = false;
             String title = current != null ? current.track.name : "";
-            notice("无法获取《" + title + "》的播放地址，已跳过");
+            // 走到这里说明房间里没有一个成员能解析出这首歌的完整音频（会员曲而在场都不是会员，
+            // 或者这首歌本身已下架）。把原因说明白，否则看起来像是服务端坏了。
+            notice("房间里没有成员能解析出《" + title + "》的完整播放地址（可能需要会员），已跳过");
             next(false);
             return;
         }

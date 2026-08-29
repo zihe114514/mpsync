@@ -324,7 +324,9 @@ public final class RoomManager {
                 if (!room.isOwner(uuid)) { Net.error(uuid, "只有房主可以解散房间"); return; }
                 disband(room, "房主已解散房间");
             }
+            // 直链应答：必须连带平台一起回传，否则跨平台房间里 songId 相同的两首歌会串链接
             case Proto.C_URL_SUPPLY -> room.supplyUrl(
+                    Proto.str(msg, "source", Proto.SOURCE_NETEASE),
                     Proto.str(msg, "songId", ""),
                     Proto.str(msg, "url", ""),
                     Proto.num(msg, "urlExpiresAt", 0L),
