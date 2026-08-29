@@ -1,7 +1,0 @@
-Idle timeout for 1.21.11forge after 120s
-ËùÔÚÎ»ÖÃ C:\Users\user\Desktop\mpsync-main\fast-build.ps1:76 ×Ö·û: 5
-+     throw "Idle timeout for $Project after ${IdleTimeoutSec}s"
-+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : OperationStopped: (Idle timeout for 1.21.11forge after 120s:String) [], RuntimeException
-    + FullyQualifiedErrorId : Idle timeout for 1.21.11forge after 120s
- 

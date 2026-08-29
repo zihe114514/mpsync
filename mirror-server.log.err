@@ -1,8 +1,0 @@
-使用“0”个参数调用“Start”时发生异常:“在前缀“http://127.0.0.1:18765/”上侦听失败，因为它与计算机上的现有注册冲突。
-”
-所在位置 C:\Users\user\Desktop\mpsync-main\mirror-server.ps1:43 字符: 1
-+ $listener.Start()
-+ ~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : HttpListenerException
- 
