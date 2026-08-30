@@ -1,0 +1,91 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0.24,6.2)'
+}
+
+version = mod_version
+group = mod_group_id
+base { archivesName = archives_base_name }
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+def centralHosts = ['repo.maven.apache.org', 'repo1.maven.org', 'repo.maven.org'] as Set
+repositories.all { repo ->
+    if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository && repo.url != null) {
+        def host = repo.url.host
+        if (centralHosts.contains(host)) {
+            repo.url = uri('https://maven.aliyun.com/repository/public')
+        }
+    }
+}
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    copyIdeResources = true
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'info'
+        }
+        server { args '--nogui' }
+        client {}
+    }
+}
+
+sourceSets {
+    main {
+        java.srcDirs += ['../core/src/main/java', '../forge-common/src/main/java']
+    }
+}
+
+repositories {
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    maven { url = 'https://maven.minecraftforge.net/' }
+    maven { url = 'https://maven.neoforged.net/releases' }
+    maven {
+        url = uri('http://127.0.0.1:18765/maven/')
+        content { includeGroup 'com.mojang' }
+    }
+    maven { url = uri('file:///C:/Users/user/.gradle/caches/forge_gradle/mcp_repo') }
+    maven { url = uri('file:///C:/Users/user/.gradle/caches/forge_gradle/minecraft_user_repo') }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+            forge_version: forge_version, forge_version_range: forge_version_range,
+            loader_version_range: loader_version_range,
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_authors: mod_authors, mod_description: mod_description
+    ]
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/mods.toml']) { expand replaceProperties + [project: project] }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+tasks.withType(net.minecraftforge.gradle.common.tasks.DownloadMCMeta).configureEach { t ->
+    t.actions.clear()
+    t.doLast {
+        def mirror = file("${rootProject.projectDir}/../mirror")
+        def manifestSrc = new File(mirror, 'version_manifest.json')
+        def manifestDst = t.manifest.get().asFile
+        manifestDst.parentFile.mkdirs()
+        manifestDst.bytes = manifestSrc.bytes
+        def ver = t.MCVersion.get()
+        def verSrc = new File(mirror, "versions/${ver}.json")
+        def verDst = t.output.get().asFile
+        verDst.parentFile.mkdirs()
+        verDst.bytes = verSrc.bytes
+        logger.lifecycle("[mpsync-mirror] downloadMCMeta -> local {} / {}", manifestSrc.name, verSrc.name)
+    }
+}

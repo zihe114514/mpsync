@@ -14,21 +14,25 @@
 core/            与平台无关的房间引擎 + 线协议（只依赖 gson）
 fabric-common/   Yarn 命名的 Fabric 适配层（1.20.1 / 1.21.1 / 1.21.11 共用）
 paper-common/    Bukkit 适配层（所有 Paper 版本共用）
+forge-common/    Forge 适配层（1.20.1 / 1.21.1 / 1.21.11 共用；26.2 因 API 差异有独立副本）
+neoforge-common/ NeoForge 适配层（各版本共用接口）
 
 1.20.1fabric/   1.21.1fabric/   1.21.11fabric/   26.2fabric/
 1.20.1paper/    1.21.1paper/    1.21.11paper/    26.2paper/
+1.20.1forge/    1.21.1forge/    1.21.11forge/    26.2forge/
+1.20.1neoforge/ 1.21.1neoforge/ 1.21.11neoforge/ 26.2neoforge/
 
 服务端/          最早那份 1.20.1 Fabric 工程（已被 1.20.1fabric 取代，仅作历史保留）
 ```
 
-八个工程各自独立（各有 gradlew），通过 build.gradle 里的
+各工程独立（各有 gradlew），通过 build.gradle 里的
 
 ```gradle
 sourceSets.main.java.srcDirs += ['../core/src/main/java', '../fabric-common/src/main/java']
 ```
 
-共用同一份源码，因此房间逻辑只有一份实现，平台差异只留在
-`MpNet` / `MpPayloads` / `FabricPlatform` / `PaperPlatform` 这几个薄适配文件里。
+共用同一份 `core` 源码，因此房间逻辑只有一份实现；平台差异只留在
+`MpNet` / `MpPayloads` / `*Platform` 这几个薄适配文件里（Forge/NeoForge 同理）。
 
 ## 构建
 

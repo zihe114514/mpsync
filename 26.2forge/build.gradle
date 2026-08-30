@@ -1,0 +1,75 @@
+plugins {
+    id 'java'
+    id 'idea'
+    id 'eclipse'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[7.0.29,8.0)'
+}
+
+
+version = mod_version
+group = mod_group_id
+base.archivesName = archives_base_name
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+def centralHosts = ['repo.maven.apache.org', 'repo1.maven.org', 'repo.maven.org'] as Set
+repositories.all { repo ->
+    if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository && repo.url != null) {
+        def host = repo.url.host
+        if (centralHosts.contains(host)) {
+            repo.url = uri('https://maven.aliyun.com/repository/public')
+        } else if (host == 'libraries.minecraft.net') {
+            repo.url = uri('http://127.0.0.1:18765/maven/')
+        }
+    }
+}
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    accessTransformer = true
+    runs {
+        configureEach {
+            workingDir.convention layout.projectDirectory.dir('run')
+            systemProperty 'forge.logging.console.level', 'info'
+        }
+        register('server') { args '--nogui' }
+        register('client') {}
+    }
+}
+
+sourceSets {
+    main {
+        java.srcDirs += ['../core/src/main/java']
+    }
+}
+
+repositories {
+    minecraft.mavenizer(it)
+    maven fg.forgeMaven
+    maven { url = uri('http://127.0.0.1:18765/maven/') }
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    mavenCentral()
+}
+
+dependencies {
+    implementation minecraft.dependency("net.minecraftforge:forge:$minecraft_version-$forge_version")
+    annotationProcessor 'net.minecraftforge:eventbus-validator:7.0.5'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+}
+
+tasks.named('processResources', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+        forge_version: forge_version, forge_version_range: forge_version_range,
+        loader_version_range: loader_version_range,
+        mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+        mod_authors: mod_authors, mod_description: mod_description
+    ]
+    inputs.property('replaceProperties', replaceProperties)
+    filesMatching(['META-INF/mods.toml']) { expand replaceProperties }
+}
