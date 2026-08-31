@@ -25,6 +25,34 @@ public final class MpConfig {
     public int maxRooms = 32;
     /** Interval of the authoritative clock broadcast, in ticks. */
     public int timeBroadcastTicks = 40;
+    /**
+     * 命令帧之后的「时钟静默窗」：换歌／暂停／恢复／拖进度之后这么久内不发时钟心跳。
+     *
+     * <p>为什么需要：命令帧刚下发的那几秒，全房客户端都在开流（建连、缓冲、解码器起步），
+     * 各家网络快慢不一，位置天然是散的。这时候再按 {@link #timeBroadcastTicks} 打一发心跳，
+     * 每个还没缓冲完的客户端都会算出一个大偏差，于是集体 seek —— 而 seek 会重新开流，
+     * 下一发心跳又是同样的局面，进度就在那儿来回跳。静默窗把这段「本来就该乱」的时间让出去，
+     * 等大家真的开始播了再校准。</p>
+     *
+     * <p>命令帧本身不受影响，仍然立刻下发：静默的只是心跳。</p>
+     */
+    public long clockGraceMs = 4000L;
+    /**
+     * 软偏差阈值：客户端与服务端位置差超过这个值才值得处理，但只做静默微调（追/缓播放速度或
+     * 小步纠偏），不许硬 seek。播放器缓冲抖动、解码延迟常年在 1~2 秒这个量级，硬跳只会更难听。
+     */
+    public long softDriftMs = 2500L;
+    /** 硬偏差阈值：只有差到这个程度（真的脱节了）才允许客户端硬 seek 回服务端位置。 */
+    public long hardDriftMs = 6000L;
+    /** 两次硬 seek 之间的最小间隔。网络差的时候，这一条是「来回跳」的最后一道闸。 */
+    public long resyncCooldownMs = 10_000L;
+    /**
+     * 连续多少发心跳都判定超阈值，才真的动手。
+     *
+     * <p>单发心跳不可信：一次 RTT 抖动就能造出几秒的假偏差。要求连续命中，能把瞬时抖动
+     * 和真正的脱节区分开。</p>
+     */
+    public int driftConfirmHits = 2;
     /** Assumed stream-URL lifetime when a client does not report one. */
     public long assumedUrlLifetimeMs = 20 * 60 * 1000L;
     /**
@@ -93,6 +121,14 @@ public final class MpConfig {
             }
             if (cfg.allowedSources == null) cfg.allowedSources = new ArrayList<>();
             if (cfg.timeBroadcastTicks < 5) cfg.timeBroadcastTicks = 5;
+            // 时钟同步这一组：错配的阈值比默认值更糟，所以逐项兜底，并保证 soft < hard。
+            if (cfg.clockGraceMs < 0L) cfg.clockGraceMs = 0L;
+            if (cfg.clockGraceMs > 30_000L) cfg.clockGraceMs = 30_000L;
+            if (cfg.softDriftMs < 1000L) cfg.softDriftMs = 1000L;
+            if (cfg.hardDriftMs < cfg.softDriftMs + 1000L) cfg.hardDriftMs = cfg.softDriftMs + 1000L;
+            if (cfg.resyncCooldownMs < 2000L) cfg.resyncCooldownMs = 2000L;
+            if (cfg.driftConfirmHits < 1) cfg.driftConfirmHits = 1;
+            if (cfg.driftConfirmHits > 10) cfg.driftConfirmHits = 10;
             if (cfg.assumedUrlLifetimeMs < 60_000L) cfg.assumedUrlLifetimeMs = 60_000L;
             // 低于这个值时「向别的成员要链接」在物理上来不及，等于把功能关掉，所以兜底抬上来。
             if (cfg.urlWaitTimeoutMs < 12_000L) cfg.urlWaitTimeoutMs = 12_000L;

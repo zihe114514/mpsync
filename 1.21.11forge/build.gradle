@@ -1,0 +1,93 @@
+plugins {
+    id 'java'
+    id 'idea'
+    id 'eclipse'
+    id 'maven-publish'
+    // ForgeGradle 7，不是 6。
+    //
+    // 这一条是必须的，不是偏好：Forge 61.x（MC 1.21.11）的官方 MDK 用的就是 FG `[7.0.3,8)`。
+    // 之前这个模块钉在 FG `[6.0.24,6.2)` 上，构建会死在
+    //     Error getting artifact: net.minecraftforge:forge:1.21.11-61.2.1_mapped_official_1.21.11
+    //     java.util.zip.ZipException: duplicate entry: mcp/client/Start.class
+    // 原因查到了：FG6 的 MinecraftUserRepo.findRaw 会把 mcp_config 的 inject 源码（mcp/client/Start.java）
+    // 编译好再塞进 srg jar，但 1.21.11 这条链路上 binpatched jar **本来就带着** mcp/client/Start.class
+    // （实测：1.21.11 的 binpatched.jar 里 mcp/* 有 1 项，1.21.1 的是 0 项），于是同名条目写第二次直接抛异常，
+    // 那个 _mapped_official_ jar 永远生成不出来，compileClasspath 也就永远解析不了。
+    // 这不是缓存脏了（清掉 forge_gradle 缓存与 build/_compileJava_* 重跑，一模一样地失败），
+    // 是 FG6 与 Forge 61 时代的 userdev 流程对不上。换 FG7 才是正解。
+    id 'net.minecraftforge.gradle' version '[7.0.29,8.0)'
+}
+
+version = mod_version
+group = mod_group_id
+base.archivesName = archives_base_name
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+// 本机 Maven Central 直连与走代理都不稳，凡是解析到 central 的仓库一律改写到阿里云。
+// 放在 repositories.all 里是因为 FG 自己也会往里塞仓库，得连它塞的一起改。
+def centralHosts = ['repo.maven.apache.org', 'repo1.maven.org', 'repo.maven.org'] as Set
+repositories.all { repo ->
+    if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository && repo.url != null) {
+        def host = repo.url.host
+        if (centralHosts.contains(host)) {
+            repo.url = uri('https://maven.aliyun.com/repository/public')
+        }
+    }
+}
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    runs {
+        configureEach {
+            workingDir.convention layout.projectDirectory.dir('run')
+            systemProperty 'forge.logging.console.level', 'info'
+        }
+        register('server') { args '--nogui' }
+        register('client') {}
+    }
+}
+
+sourceSets {
+    main {
+        java.srcDirs += ['../core/src/main/java', '../forge-common/src/main/java']
+    }
+}
+
+repositories {
+    // FG7 的取件方式：mavenizer 提供解包好的 Minecraft 依赖，forgeMaven 提供 forge 自己的产物，
+    // minecraftLibsMaven 就是官方 libraries.minecraft.net（本机直连可用且快）。
+    // 这三行替掉了 FG6 时代那一堆手写仓库 + client-extra.jar 的手工别名任务。
+    minecraft.mavenizer(it)
+    maven fg.forgeMaven
+    maven fg.minecraftLibsMaven
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    mavenCentral()
+    // 这里刻意**不挂** BMCLAPI。它作为 com.mojang 的兜底看着很合理，实际是个雷：
+    // pom 请求会 302 到 https://<n>.749333.xyz/download/<hash>...，那个主机名是动态的、本机也连不上；
+    // Gradle 一旦在某个仓库上失败就会把它整个禁用，接着 authlib / jtracy 全线解析不了
+    // （实测报错：Repository maven2 is disabled due to earlier error）。
+    // 官方 libraries.minecraft.net 在 build-all.ps1 给这个模块注入 JDK hosts 之后是直连 ~1s，够用了。
+}
+
+dependencies {
+    implementation minecraft.dependency("net.minecraftforge:forge:$minecraft_version-$forge_version")
+    annotationProcessor 'net.minecraftforge:eventbus-validator:7.0.5'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+tasks.named('processResources', ProcessResources) {
+    var replaceProperties = [
+            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+            forge_version: forge_version, forge_version_range: forge_version_range,
+            loader_version_range: loader_version_range,
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_authors: mod_authors, mod_description: mod_description
+    ]
+    inputs.property('replaceProperties', replaceProperties)
+    filesMatching(['META-INF/mods.toml']) { expand replaceProperties }
+}

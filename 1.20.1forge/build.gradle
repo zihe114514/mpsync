@@ -1,0 +1,91 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0.24,6.2)'
+}
+
+version = mod_version
+group = mod_group_id
+base { archivesName = archives_base_name }
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+def centralHosts = ['repo.maven.apache.org', 'repo1.maven.org', 'repo.maven.org'] as Set
+repositories.all { repo ->
+    if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository && repo.url != null) {
+        def host = repo.url.host
+        if (centralHosts.contains(host)) {
+            repo.url = uri('https://maven.aliyun.com/repository/public')
+        }
+    }
+}
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    copyIdeResources = true
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'info'
+        }
+        server { args '--nogui' }
+        client {}
+    }
+}
+
+sourceSets {
+    main {
+        java.srcDirs += ['../core/src/main/java', '../forge-common/src/main/java']
+    }
+}
+
+repositories {
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    maven { url = 'https://maven.minecraftforge.net/' }
+    maven { url = 'https://maven.neoforged.net/releases' }
+    // com.mojang 的取件源。原来钉在 mirror-server.ps1（http://127.0.0.1:18765/maven/）上，
+    // 那是云端构建机的本地镜像：本机没有 mirror/ 目录、端口也没人听，而 content{includeGroup}
+    // 又把它设成 com.mojang 的唯一候选，于是 authlib 一律解析失败、整个构建停在配置阶段。
+    // 换成官方 libraries.minecraft.net（本机直连 200 且快），BMCLAPI 留作兜底。
+    // 顺序很关键：BMCLAPI 的 pom 拿得到，但 jar 会 302 到 *.749333.xyz 那组 CDN 节点，本机连不上；
+    // 而 Gradle 对「模块找到了、artifact 下载失败」不会回退到下一个仓库，所以官方源必须在前。
+    // 两个都只对 com.mojang 生效，不影响其他依赖的解析顺序。
+    maven {
+        url = 'https://libraries.minecraft.net/'
+        content { includeGroup 'com.mojang' }
+    }
+    maven {
+        url = 'https://bmclapi2.bangbang93.com/maven/'
+        content { includeGroup 'com.mojang' }
+    }
+    // 这里原来还挂着两个 file:// 仓库，指向 forge_gradle 缓存的 mcp_repo / minecraft_user_repo
+    // （云端构建机上那两个目录是预填好的）。本机缓存里没有 client-<ver>-extra.jar，而这两个仓库
+    // 又把 ForgeGradle 自己注入的动态仓库挡在后面 —— 那个动态仓库本来会现场解包/打补丁生成
+    // -extra.jar。删掉它们，让 FG 走正常流程。
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+            forge_version: forge_version, forge_version_range: forge_version_range,
+            loader_version_range: loader_version_range,
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_authors: mod_authors, mod_description: mod_description
+    ]
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/mods.toml']) { expand replaceProperties + [project: project] }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+// 原先这里把 DownloadMCMeta 整个任务替换成「从仓库根的 ../mirror 复制 version_manifest.json」。
+// 那份 mirror/ 只存在于云端构建机，本机根本没有，任务一跑就失败。改回让 ForgeGradle 自己下载，
+// 版本清单用构建插件默认的官方 piston-meta（本机实测直连 200）。

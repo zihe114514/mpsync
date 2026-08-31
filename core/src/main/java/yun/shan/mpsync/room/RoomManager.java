@@ -188,6 +188,18 @@ public final class RoomManager {
                     hello.addProperty("server", "mpsync");
                     hello.addProperty("membersCanEnqueue", cfg.membersCanEnqueue);
                     hello.addProperty("maxQueuePerMember", cfg.maxQueuePerMember);
+                    // 时钟纠偏阈值由服务端统一下发。这是让「同一房间里不同客户端口径一致」的关键：
+                    // modernMP / MuoniumPlayer、1.20.1 到 26.2，全都用这一套数，
+                    // 不会出现同一发心跳有人跳有人不跳、互相拉扯的局面。
+                    // 老客户端读不到这几个字段，就用它自带的默认值（与这里的默认值相同）。
+                    hello.addProperty("clockGraceMs", cfg.clockGraceMs);
+                    hello.addProperty("softDriftMs", cfg.softDriftMs);
+                    hello.addProperty("hardDriftMs", cfg.hardDriftMs);
+                    hello.addProperty("resyncCooldownMs", cfg.resyncCooldownMs);
+                    hello.addProperty("driftConfirmHits", cfg.driftConfirmHits);
+                    // 心跳间隔也一并告知：客户端据此知道「多久没收到心跳算掉线」，
+                    // 也能推出 driftConfirmHits 次确认大约要花多少时间。
+                    hello.addProperty("timeBroadcastTicks", cfg.timeBroadcastTicks);
                     Net.send(uuid, hello);
                     Room room = roomOf(uuid);
                     if (room != null) room.sendSnapshot(uuid);

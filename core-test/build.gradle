@@ -1,0 +1,54 @@
+plugins {
+    id 'java'
+}
+
+// ============================================================================
+// core 的单元测试工程 —— 同时是「core 不许碰 Minecraft」这条约束的编译期守卫。
+//
+// 为什么需要它：16 个服务端模块全部通过 srcDirs 把 core/ 编进自己的 jar，房间引擎、
+// 线协议、配置只有这一份实现。整个架构立在一条不变量上 —— core 只依赖 gson 和 JDK，
+// 一行 Minecraft/loader 的类都不碰（这才是它能跨 1.20.1 到 26.2 共用的真正原因）。
+// 但在此之前没有任何东西守着这条不变量：谁往 core 里写一行 net.minecraft.*，
+// 要等到某个模块构建时才炸，而且报错出现在哪个模块取决于构建顺序。
+//
+// 这个工程把 core 编进来，类路径上**只有 gson**：
+//   * core 里出现任何 Minecraft / Fabric / Forge / NeoForge / Bukkit 的 import → 直接编不过；
+//   * 房间逻辑因此可以用纯 JVM 单元测试覆盖，不需要起服务器、不需要进游戏。
+// ============================================================================
+sourceSets {
+    main {
+        java.srcDirs = ['../core/src/main/java']
+        resources.srcDirs = []
+    }
+}
+
+repositories {
+    // 与其他模块一致：本机直连 Maven Central 不稳，统一走阿里云，官方源兜底。
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    mavenCentral()
+}
+
+dependencies {
+    // core 唯一的第三方依赖。版本跟着 Minecraft 1.21.x 自带的那个走，避免测试里
+    // 用到线上不存在的 gson 行为。
+    implementation 'com.google.code.gson:gson:2.10.1'
+
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// release 17：core 的目标下限就是 1.20.1 那条线，测试也编到同一个字节码等级，
+// 这样「测试过了但 1.20.1 编不过」这种事不会发生。
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'failed', 'skipped'
+        exceptionFormat = 'full'
+    }
+}
