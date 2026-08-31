@@ -1,0 +1,54 @@
+# core 的持续集成。
+#
+# 只跑 core-test 一个工程，故意不碰那 16 个模块：模块构建要下 Minecraft 客户端 jar、
+# MCP/NeoForm 映射、各家 loader 的 MDK，在 CI 上既慢又脆，而它们编进去的 core 源码
+# 本来就是同一份。真正需要每次提交都守住的是两条不变量：
+#   1) core 只依赖 gson + JDK，一行平台类都不碰（否则跨 1.20.1~26.2 共用的前提就没了）；
+#   2) 房间时钟 / 线协议 / 配置钳制的行为不回退（时钟防抖那次被 pull 冲掉就是这么丢的）。
+
+name: core
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core-test:
+    name: core 单元测试 + 平台无关性守卫
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 先跑最便宜的那道闸：不需要 JDK、不需要联网，几百毫秒出结果。
+      - name: 静态检查 core 里不得出现平台 import
+        run: |
+          if grep -rnE '^[[:space:]]*import[[:space:]]+(net\.minecraft|net\.fabricmc|net\.minecraftforge|net\.neoforged|org\.bukkit|io\.papermc|cpw\.mods|org\.spongepowered)' core/src/main/java; then
+            echo "::error::core 出现了平台相关的 import（见上面几行）。core 必须只依赖 gson 与 JDK。"
+            exit 1
+          fi
+          echo "OK: core 未引用任何 Minecraft / loader 类型"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # 刻意不用 core-test 里的 wrapper：它的 distributionUrl 指向腾讯云镜像（给国内开发机用的），
+      # 从 GitHub runner 拉反而慢。CI 直接装同一个 Gradle 版本。
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.1"
+
+      - name: core-test
+        working-directory: core-test
+        run: gradle test --console=plain
+
+      - name: 上传测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-report
+          path: core-test/build/reports/tests/test
+          if-no-files-found: ignore

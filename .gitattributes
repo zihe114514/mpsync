@@ -1,6 +1,27 @@
+# 换行 / 二进制约定。
+#
+# 为什么要显式写死：本仓在 Windows 上开发，但 core 的 .java、gradlew、CI 脚本必须在 LF
+# 下保持一致（否则 Linux 服务器上跑 gradlew 会报 bad interpreter）；而 .ps1 反过来必须是
+# CRLF —— 配合 UTF-8 BOM（见 .editorconfig），否则 powershell.exe 5.1 读中文注释会解析崩。
+# 只靠 core.autocrlf 之类的本机设置守不住这两条，所以写进 .gitattributes 随仓库走。
+
 * text=auto eol=lf
+
+# Windows 侧脚本：检出成 CRLF
 *.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 需要在 *nix 上直接执行的：强制 LF
 gradlew text eol=lf
+*.sh text eol=lf
+
+# 二进制：不做换行转换，也别试图 diff
 *.jar binary
+*.zip binary
+*.png binary
+*.ico binary
+*.ogg binary
 *.mca binary
 *.dat binary
+*.nbt binary

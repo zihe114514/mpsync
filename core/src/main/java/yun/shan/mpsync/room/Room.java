@@ -62,6 +62,11 @@ public final class Room {
     private int tickCounter;
     private long lastRefreshAsk;
     private long allOfflineSince;
+    /**
+     * 最近一次播放命令（换歌 / 暂停 / 恢复 / 拖进度 / 等到链接后起播）下发的时刻。
+     * 用来算时钟静默窗，见 {@link #inClockGrace}。
+     */
+    private long lastCommandAt;
 
     public Room(MpConfig cfg, String id, String code, UUID creator, String creatorName, String name) {
         this.cfg = cfg;
@@ -251,6 +256,22 @@ public final class Room {
 
     // ── playback ─────────────────────────────────────────────────────────────
 
+    /**
+     * 记一次命令帧下发。之后 {@link MpConfig#clockGraceMs} 毫秒内不发时钟心跳。
+     *
+     * <p>同时把 {@link #tickCounter} 归零：静默窗一结束就立刻打一发心跳没有意义，
+     * 那时候慢的客户端可能刚开始播，让它走满一个完整的广播间隔再校准。</p>
+     */
+    private void markCommand() {
+        lastCommandAt = System.currentTimeMillis();
+        tickCounter = 0;
+    }
+
+    /** 是否还在命令帧之后的时钟静默窗内。 */
+    private boolean inClockGrace(long now) {
+        return cfg.clockGraceMs > 0L && lastCommandAt > 0L && now - lastCommandAt < cfg.clockGraceMs;
+    }
+
     public long positionMs() {
         long pos = playing ? System.currentTimeMillis() - startEpoch : pausedPos;
         if (pos < 0) pos = 0;
@@ -326,6 +347,8 @@ public final class Room {
         playing = true;
         seq++;
         waitingUrl = false;
+        // 换歌是最容易引发集体误判的时刻：全房都在开流，位置必然是散的。
+        markCommand();
 
         if (!entry.track.hasFreshUrl()) {
             // No usable URL: hold the clock and ask a client to re-resolve. Pushing a
@@ -399,6 +422,9 @@ public final class Room {
                 playing = true;
                 startEpoch = System.currentTimeMillis() - pausedPos;
                 seq++;
+                // 等到链接之后的起播等同于换歌，同样要让出静默窗。
+                // （下面「播放中静默续签」那条路不打标记：它不动时钟，也不会让客户端重开流。）
+                markCommand();
                 broadcastPlay();
                 broadcastQueue();
                 return;
@@ -421,6 +447,7 @@ public final class Room {
         pausedPos = positionMs();
         playing = false;
         seq++;
+        markCommand();
         JsonObject m = Proto.msg(Proto.S_PAUSE);
         stamp(m, pausedPos);
         broadcast(m);
@@ -438,6 +465,7 @@ public final class Room {
         startEpoch = System.currentTimeMillis() - pausedPos;
         playing = true;
         seq++;
+        markCommand();
         JsonObject m = Proto.msg(Proto.S_RESUME);
         stamp(m, pausedPos);
         broadcast(m);
@@ -449,6 +477,7 @@ public final class Room {
         pausedPos = Math.max(0L, dur > 0 ? Math.min(pos, dur) : pos);
         if (playing) startEpoch = System.currentTimeMillis() - pausedPos;
         seq++;
+        markCommand();
         JsonObject m = Proto.msg(Proto.S_SEEK);
         stamp(m, pausedPos);
         broadcast(m);
@@ -553,9 +582,12 @@ public final class Room {
             requestUrl(current, true);
         }
 
+        // 心跳只在「房间确实在稳定播放」时发。两个门禁：
+        //   waitingUrl —— 正卡在等链接，位置没有意义；
+        //   inClockGrace —— 命令帧刚下发，全房都在开流，这时候校准只会引发一轮集体误判 seek。
         if (++tickCounter >= cfg.timeBroadcastTicks) {
             tickCounter = 0;
-            if (current != null) broadcastTime();
+            if (current != null && !waitingUrl && !inClockGrace(now)) broadcastTime();
         }
     }
 
@@ -620,8 +652,14 @@ public final class Room {
         broadcast(m);
     }
 
+    /**
+     * 时钟心跳。带 {@code heartbeat: true} 明示「这不是命令」——客户端据此决定用软/硬偏差
+     * 那一套阈值去判断要不要纠偏，而不是像收到 play/seek 那样无条件对齐。
+     * 命令帧不带这个字段，老客户端读不到也不影响（缺省视为 false）。
+     */
     public void broadcastTime() {
         JsonObject m = Proto.msg(Proto.S_TIME);
+        m.addProperty("heartbeat", true);
         m.addProperty("playing", playing);
         m.addProperty("duration", current == null ? 0L : current.track.durationMs);
         m.addProperty("listeners", listenerCount());

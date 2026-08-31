@@ -67,6 +67,5 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 neoFormRuntime {
-    launcherManifestUrl = 'http://127.0.0.1:18765/version_manifest_v2.json'
     verbose = true
 }

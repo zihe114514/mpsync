@@ -19,8 +19,8 @@ repositories.all { repo ->
         def host = repo.url.host
         if (centralHosts.contains(host)) {
             repo.url = uri('https://maven.aliyun.com/repository/public')
-        } else if (host == 'libraries.minecraft.net') {
-            repo.url = uri('http://127.0.0.1:18765/maven/')
+        // 这里原来把 libraries.minecraft.net 改写到云端构建机的本地镜像。现在不改写：
+        // 官方源本机直连可用，而 BMCLAPI 的 jar 会 302 到连不上的 CDN 节点。
         }
     }
 }
@@ -47,9 +47,14 @@ sourceSets {
 repositories {
     minecraft.mavenizer(it)
     maven fg.forgeMaven
-    maven { url = uri('http://127.0.0.1:18765/maven/') }
+    maven fg.minecraftLibsMaven
     maven { url = 'https://maven.aliyun.com/repository/public' }
     mavenCentral()
+    // 这里刻意**不挂** BMCLAPI。它作为 com.mojang 的兜底看着很合理，实际是个雷：
+    // pom 请求会 302 到 https://<n>.749333.xyz/download/<hash>...，那个主机名是动态的、本机也连不上；
+    // Gradle 一旦在某个仓库上失败就会把它整个禁用，接着 authlib / jtracy 全线解析不了
+    // （实测报错：Repository maven2 is disabled due to earlier error）。
+    // 官方 libraries.minecraft.net 在 build-all.ps1 给这个模块注入 JDK hosts 之后是直连 ~1s，够用了。
 }
 
 dependencies {

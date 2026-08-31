@@ -1,4 +1,4 @@
-param([int]$Port=18765, [string]$Root)
+﻿param([int]$Port=18765, [string]$Root)
 $ErrorActionPreference='Continue'
 if (-not $Root) { $Root = Join-Path $PSScriptRoot 'mirror' }
 $cache = Join-Path $Root 'maven'

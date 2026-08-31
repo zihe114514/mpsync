@@ -1,0 +1,47 @@
+# 本仓的编码/换行约定。
+#
+# 为什么需要：Windows PowerShell 5.1 会把**没有 BOM** 的 .ps1 按本机 ANSI(GBK) 读，
+# 于是脚本里的中文注释和全角括号会把解析器搞崩（实测发生过）。而 Gradle 读
+# gradle.properties 用的是 ISO-8859-1，所以那类文件里的**值**必须是纯 ASCII。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.java]
+indent_size = 4
+max_line_length = 120
+
+[*.{gradle,gradle.kts}]
+indent_size = 4
+
+# PowerShell 脚本：CRLF + UTF-8 BOM。BOM 不是可选项，见文件头说明。
+[*.ps1]
+end_of_line = crlf
+charset = utf-8-bom
+indent_size = 4
+
+[*.{json,yml,yaml,toml}]
+indent_size = 2
+
+# Gradle 用 java.util.Properties 读 gradle.properties，也就是 ISO-8859-1。
+# 注释行整行被跳过，所以里面写中文（UTF-8）无害；但**值**里一旦出现非 ASCII，
+# 就会以 mojibake 的形式展开进 mods.toml / fabric.mod.json（实测发生过）。
+# 结论：文件按 UTF-8 存，值只许 ASCII。
+[gradle.properties]
+charset = utf-8
+
+[*.{bat,cmd}]
+end_of_line = crlf
+
+[gradlew]
+end_of_line = lf
+
+[*.md]
+trim_trailing_whitespace = false
