@@ -10,7 +10,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /** {@code config/mpsync.json} — written with defaults on first run. */
 public final class MpConfig {
@@ -94,6 +97,99 @@ public final class MpConfig {
      */
     public List<String> allowedHosts = new ArrayList<>();
 
+    // ── 公开房间 ──────────────────────────────────────────────────────────────
+
+    /**
+     * 是否允许房主把房间设为公开（出现在公开房间列表里，任何人可直接加入）。
+     *
+     * <p>关掉之后房间只能靠邀请码或邀请进 —— 有些服务器不希望陌生人随便加进别人的房间。
+     */
+    public boolean publicRoomsEnabled = true;
+
+    // ── 服务器频道 ────────────────────────────────────────────────────────────
+
+    /** 是否开启全服公开大房间（服务器频道）。 */
+    public boolean channelEnabled = true;
+    public String channelName = "服务器频道";
+    /** 频道人数上限（0 = 不限）。 */
+    public int maxChannelMembers = 0;
+    /**
+     * 频道里单个玩家同时能挂在歌单上的曲目数。
+     *
+     * <p>需求写死的 3 首。频道是全服共用的，不设这一档的话一个人塞满队列就把所有人挡在外面。
+     */
+    public int channelMaxPerMember = 3;
+
+    // ── 投票（频道） ──────────────────────────────────────────────────────────
+
+    /** 一次投票的窗口。需求：倒计时 30 秒后展示结果。 */
+    public long voteWindowMs = 30_000L;
+    /** 切歌通过门槛：同意票数必须<b>严格超过</b>在线人数的这个比例（50% 以上）。 */
+    public double voteSkipRatio = 0.5d;
+    /** 踢人通过门槛（80% 以上）。 */
+    public double voteKickRatio = 0.8d;
+    /**
+     * 踢人投票没通过之后的冷却，期间不能再对同一个人发起。
+     *
+     * <p>需求：「不满足票数则放入冷却，避免乱踢。此方案需超过 1 小时生效」——默认就是 1 小时。
+     * 这个数必须远大于投票窗口，否则「乱踢」只是慢一点而已。
+     */
+    public long voteKickCooldownMs = 60 * 60 * 1000L;
+    /** 少于这么多人时不开投票（自己一个人投自己没有意义）。 */
+    public int voteMinMembers = 2;
+
+    // ── 代解析（服主 Token / 贡献 VIP） ───────────────────────────────────────
+
+    /**
+     * 服主配置的平台凭据，{@code 平台令牌 -> 凭据}。
+     *
+     * <p><b>用途</b>：给没有会员的玩家解析会员曲。服务端拿这份凭据自己去平台取一条直链，
+     * 再像成员上传的链接一样转发给全房，房间里因此不需要恰好有个会员在线。
+     *
+     * <p><b>网易云</b>填 {@code MUSIC_U} 的值（登录后的 cookie），也可以整段
+     * {@code "MUSIC_U=xxx; __csrf=yyy"} 一起填。其它平台见 {@link #resolverEndpoints}。
+     *
+     * <p><b>这是敏感数据</b>：等价于服主自己的会员账号。它躺在 {@code mpsync.json} 里，
+     * 谁能读服务器文件谁就能拿走，所以别把它填到共享主机上，也别把配置文件提交进仓库。
+     * 玩家侧永远拿不到它 —— 下发给客户端的只有解析出来的那条带签名直链。
+     */
+    public Map<String, String> serverTokens = new LinkedHashMap<>();
+
+    /**
+     * 其它平台的解析接口模板，{@code 平台令牌 -> URL 模板}。
+     *
+     * <p>服务端内置的解析只有网易云一家（它的接口签名方式是公开且稳定的）。其它平台千差万别，
+     * 与其在服务端追着各家接口改，不如让服主指一个自己信得过的解析服务：模板里可以用
+     * {@code {songId}}、{@code {source}}、{@code {token}} 三个占位符，例如
+     * {@code "https://my-api.example.com/qq/url?id={songId}&token={token}"}。
+     *
+     * <p>响应可以是纯文本的一条 URL，也可以是 JSON —— 会依次找 {@code url}、{@code data.url}、
+     * {@code data[0].url} 这几个常见位置。解析出来的地址仍然要过
+     * {@link yun.shan.mpsync.util.SourceGuard#isPublicHttpUrl}，所以指不到内网。
+     */
+    public Map<String, String> resolverEndpoints = new LinkedHashMap<>();
+
+    /** 服务端代解析的单次超时。超过就当没解析出来，退回向客户端要。 */
+    public long serverResolveTimeoutMs = 12_000L;
+
+    /**
+     * 向客户端要链接时，是否优先问「开了贡献 VIP 的成员」。
+     *
+     * <p>开着（默认）时，同一首歌只会打扰真的能解析出来的人；关掉就退回 v1 的行为
+     * —— 先问点歌人，再问管理者，最后广播全房。
+     */
+    public boolean preferContributors = true;
+
+    /** 这个平台有没有配服务端凭据。 */
+    public boolean hasServerToken(String source) {
+        if (source == null || serverTokens == null) return false;
+        String key = source.trim().toLowerCase(Locale.ROOT);
+        String v = serverTokens.get(key);
+        if (v != null && !v.isBlank()) return true;
+        String tpl = resolverEndpoints == null ? null : resolverEndpoints.get(key);
+        return tpl != null && !tpl.isBlank();
+    }
+
     /** 平台是否开放；{@code allowedSources} 为空视为不限制。 */
     public boolean isSourceAllowed(String source) {
         if (allowedSources == null || allowedSources.isEmpty()) return true;
@@ -134,6 +230,25 @@ public final class MpConfig {
             if (cfg.urlWaitTimeoutMs < 12_000L) cfg.urlWaitTimeoutMs = 12_000L;
             if (cfg.minStreamDurationRatio < 0d) cfg.minStreamDurationRatio = 0d;
             if (cfg.minStreamDurationRatio > 1d) cfg.minStreamDurationRatio = 1d;
+            // v2 新增项：老配置文件里没有它们，gson 会留成 null / 0，逐项兜底。
+            if (cfg.channelName == null || cfg.channelName.isBlank()) cfg.channelName = "服务器频道";
+            if (cfg.channelMaxPerMember < 1) cfg.channelMaxPerMember = 3;
+            if (cfg.maxChannelMembers < 0) cfg.maxChannelMembers = 0;
+            // 投票窗口太短没人来得及看到，太长又会把频道卡住。
+            if (cfg.voteWindowMs < 10_000L) cfg.voteWindowMs = 10_000L;
+            if (cfg.voteWindowMs > 300_000L) cfg.voteWindowMs = 300_000L;
+            // 比例必须落在开区间里：0 会让任何人一票切歌，1 永远过不了。
+            if (cfg.voteSkipRatio <= 0d || cfg.voteSkipRatio >= 1d) cfg.voteSkipRatio = 0.5d;
+            if (cfg.voteKickRatio <= 0d || cfg.voteKickRatio >= 1d) cfg.voteKickRatio = 0.8d;
+            // 冷却比投票窗口长才有意义，否则「乱踢」只是慢一点。
+            if (cfg.voteKickCooldownMs < cfg.voteWindowMs * 2L) {
+                cfg.voteKickCooldownMs = Math.max(60 * 60 * 1000L, cfg.voteWindowMs * 2L);
+            }
+            if (cfg.voteMinMembers < 2) cfg.voteMinMembers = 2;
+            if (cfg.serverTokens == null) cfg.serverTokens = new LinkedHashMap<>();
+            if (cfg.resolverEndpoints == null) cfg.resolverEndpoints = new LinkedHashMap<>();
+            if (cfg.serverResolveTimeoutMs < 3_000L) cfg.serverResolveTimeoutMs = 3_000L;
+            if (cfg.serverResolveTimeoutMs > 60_000L) cfg.serverResolveTimeoutMs = 60_000L;
             cfg.save(file);
         } catch (Throwable ignored) {
             // A broken config must not stop the server from booting — defaults win.
