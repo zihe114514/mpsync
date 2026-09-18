@@ -154,4 +154,29 @@ class MpConfigTest {
         assertTrue(cfg.clockGraceMs >= cfg.automixLeadMs + 1000L, "静默窗必须盖住整个交叠");
         assertTrue(cfg.clockGraceMs <= 30_000L, "但静默窗本身仍有封顶");
     }
+
+    /**
+     * 指派超时可以被 {@code 0} 取消（Folia 那套模型推理动辄几十秒，固定超时会在它跑完前抢活儿）。
+     *
+     * <p>关键是 <b>0 不能被下限钳成 5 秒</b> —— 否则「取消超时」这个开关根本关不掉，
+     * 只能让服主设一个很大的数去绕，那还是会有超时。</p>
+     */
+    @Test
+    void theAssignTimeoutCanBeCancelledWithZero(@TempDir Path dir) throws IOException {
+        Path f = dir.resolve("mpsync.json");
+
+        Files.writeString(f, "{\"automixAssignTimeoutMs\":0}", StandardCharsets.UTF_8);
+        assertEquals(0L, MpConfig.load(f).automixAssignTimeoutMs,
+                "0 表示取消超时，是个有意义的值，不该被钳到下限");
+
+        Files.writeString(f, "{\"automixAssignTimeoutMs\":-1}", StandardCharsets.UTF_8);
+        assertEquals(0L, MpConfig.load(f).automixAssignTimeoutMs, "负数按「取消」处理，不留负数超时这种状态");
+
+        Files.writeString(f, "{\"automixAssignTimeoutMs\":100}", StandardCharsets.UTF_8);
+        assertEquals(5_000L, MpConfig.load(f).automixAssignTimeoutMs,
+                "但只要给了正数，下限仍然生效：太短的超时等于一指派就立刻改派，谁都没机会算完");
+
+        Files.writeString(f, "{\"automixAssignTimeoutMs\":999999}", StandardCharsets.UTF_8);
+        assertEquals(120_000L, MpConfig.load(f).automixAssignTimeoutMs, "上限照旧，别让一首歌白等太久");
+    }
 }

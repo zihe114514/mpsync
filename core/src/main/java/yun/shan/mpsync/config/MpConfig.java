@@ -66,6 +66,12 @@ public final class MpConfig {
      * 而这首曲子有整首歌的时间可以等（计划只要赶在 {@link #automixLeadMs} 之前到就行）。</p>
      *
      * <p>被指派人主动拒绝（{@code analyze_decline}）时不走这个超时，立刻改派 —— 那是明确信号。</p>
+     *
+     * <p><b>设成 {@code 0} 就是取消超时</b>（负数同样按 0 处理）：被指派人只要还在线，就一直等它把计划
+     * 交上来，不再因为「等太久」改派。Folia 那套模型推理动辄几十秒，固定超时会在它还没跑完时就把活儿
+     * 抢走 —— 不但白烧两台的算力，还会把「算得慢但在算」的那台拉进黑名单。关掉之后改派只剩两条路：
+     * 被指派人<b>主动拒绝</b>，或它<b>掉线</b>了（掉线这条由 {@code Room#tickAnalyst} 单独判，与超时无关）。
+     * 老客户端不发这个字段，取到的就是默认的 15 秒。</p>
      */
     public long automixAssignTimeoutMs = 15_000L;
     /**
@@ -269,7 +275,11 @@ public final class MpConfig {
             }
             // 指派超时：太短会让慢机器每次都被改派（结果是谁都没算完），太长又让「借用别人电脑」
             // 这条路每首白等太久。10~60 秒之间都合理。
-            if (cfg.automixAssignTimeoutMs < 5_000L) cfg.automixAssignTimeoutMs = 5_000L;
+            // 0（或负数）表示取消超时，见字段 javadoc —— 0 是个有意义的值，不能被抬成 5 秒。
+            if (cfg.automixAssignTimeoutMs < 0L) cfg.automixAssignTimeoutMs = 0L;
+            if (cfg.automixAssignTimeoutMs > 0L && cfg.automixAssignTimeoutMs < 5_000L) {
+                cfg.automixAssignTimeoutMs = 5_000L;
+            }
             if (cfg.automixAssignTimeoutMs > 120_000L) cfg.automixAssignTimeoutMs = 120_000L;
             if (cfg.assumedUrlLifetimeMs < 60_000L) cfg.assumedUrlLifetimeMs = 60_000L;
             // 低于这个值时「向别的成员要链接」在物理上来不及，等于把功能关掉，所以兜底抬上来。

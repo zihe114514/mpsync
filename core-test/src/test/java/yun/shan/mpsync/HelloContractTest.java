@@ -85,7 +85,7 @@ class HelloContractTest {
         assertEquals(MpParty.config().automixAssignTimeoutMs,
                 hello.get("automixAssignTimeoutMs").getAsLong());
         assertTrue(hello.get("automixAssignTimeoutMs").getAsLong() > 0L,
-                "超时必须是个正数，否则一指派就立刻改派，谁都没机会算完");
+                "出厂默认是个正数超时；0 在协议里表示「取消超时 / 不设期限」，不该是默认值");
         assertTrue(hello.has("automixAnnounceAnalyst"));
     }
 

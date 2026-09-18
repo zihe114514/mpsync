@@ -622,7 +622,9 @@ public final class Room {
         JsonObject m = Proto.msg(Proto.S_ANALYZE_ASSIGN);
         m.addProperty("entryId", entryId);
         m.addProperty("attempt", analystAttempt);
-        m.addProperty("deadlineMs", analystAssignedAt + cfg.automixAssignTimeoutMs);
+        // 0 = 无期限（超时被取消）。这时不能报一个「已经过期」的时刻，客户端会以为下一秒就该换人。
+        m.addProperty("deadlineMs", cfg.automixAssignTimeoutMs > 0L
+                ? analystAssignedAt + cfg.automixAssignTimeoutMs : 0L);
         // 分析要读两首歌的音频，所以两首都带上直链。当前这一首用 withUrl = true 拿到签名链接；
         // 下一首同理 —— 房间里本来就会把它的直链发给全房（D4），这里不新增暴露面。
         if (current != null) m.add("current", current.toJson(true));
@@ -700,7 +702,19 @@ public final class Room {
             return;
         }
         if (current != null && current.automixPlan != null) { clearAnalyst(); return; }
-        if (analystAssignedAt > 0L && now - analystAssignedAt >= cfg.automixAssignTimeoutMs) {
+        // 被指派人掉线：等不到它的计划了，当场改派。
+        // 这条与超时无关，必须一直做 —— 超时是原来唯一能兜住「那台机器彻底不响应」的路径，
+        // 一旦把它关掉（automixAssignTimeoutMs = 0），不单独判掉线就会让一台离线机器
+        // 把整首歌卡在「等计划」的状态里。
+        // 不拉黑：断线重连是常事，它回来之后照样可以被指派（pickAnalyst 本来就会跳过离线者）。
+        if (!online(analyst)) {
+            System.out.println("[mpsync] 被指派人已离线（房间 " + id + " entry=" + analystEntryId + "），改派下一台");
+            assignAnalyzer(true);
+            return;
+        }
+        // 超时已取消（0）：不再有「算得慢就被抢走」这条路。
+        if (cfg.automixAssignTimeoutMs > 0L && analystAssignedAt > 0L
+                && now - analystAssignedAt >= cfg.automixAssignTimeoutMs) {
             System.out.println("[mpsync] 指派分析超时（房间 " + id + " entry=" + analystEntryId + "），改派下一台");
             refusedAnalysts.add(analyst);
             assignAnalyzer(true);
@@ -1431,7 +1445,16 @@ public final class Room {
 
     private JsonArray queueJson() {
         JsonArray a = new JsonArray();
-        for (QueueEntry e : queue) a.add(e.toJson(false));
+        // 交接计划描述的是「从正在播的这一首怎么进入队首那一首」，所以「已经算好了」这个标记
+        // 属于队首。带上它，客户端的歌单列表才能把「这一首的交接点已经算出来了」显示给用户 ——
+        // 否则分析这件事在整个界面上完全不可见，用户只能从日志里猜。
+        boolean headReady = current != null && current.automixPlan != null;
+        for (int index = 0; index < queue.size(); index++) {
+            QueueEntry e = queue.get(index);
+            JsonObject o = e.toJson(false);
+            if (index == 0 && headReady) o.addProperty("planReady", true);
+            a.add(o);
+        }
         return a;
     }
 

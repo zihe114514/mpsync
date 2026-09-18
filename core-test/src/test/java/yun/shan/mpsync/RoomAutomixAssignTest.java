@@ -126,6 +126,20 @@ class RoomAutomixAssignTest {
         return o;
     }
 
+    /**
+     * 跨过指派超时。
+     *
+     * <p>超时是个<b>很小的正数</b>（配置里 0 已经改为表示「取消超时」，不能再拿 0 当「当场过期」用了），
+     * 睡一小会儿就必定超过它；这比依赖墙钟抖动稳。
+     */
+    private static void sleepPastTimeout() {
+        try {
+            Thread.sleep(40L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     // ── 优先级：点歌人先算 ────────────────────────────────────────────────────
 
     @Test
@@ -324,7 +338,9 @@ class RoomAutomixAssignTest {
         host.clear();
 
         // 把时钟往后拨过指派超时：点歌人那台没交卷（机器慢 / 卡住了）。
-        cfg.automixAssignTimeoutMs = 0L;
+        // 超时必须是正数才生效（0 = 已取消），所以取一个很小的正数再真的睡过去。
+        cfg.automixAssignTimeoutMs = 1L;
+        sleepPastTimeout();
         room.tick();
 
         FakePlatform.Sent assign = assignFrame();
@@ -348,8 +364,9 @@ class RoomAutomixAssignTest {
         assertEquals(requester, assignFrame().to(), "测试前提：先问的是点歌人");
         host.clear();
 
-        // 指派已经过去了不少时间（用 0 表示「当场就算超时」，免得依赖墙钟抖动）。
-        cfg.automixAssignTimeoutMs = 0L;
+        // 指派已经过去了不少时间。同样用一个很小的正数超时 + 睡过去（0 现在表示「取消超时」）。
+        cfg.automixAssignTimeoutMs = 1L;
+        sleepPastTimeout();
         room.tick();
 
         FakePlatform.Sent assign = assignFrame();
@@ -357,6 +374,64 @@ class RoomAutomixAssignTest {
                 + host.sent.stream().map(FakePlatform.Sent::op).toList());
         assertEquals(helper, assign.to(), "点歌人超时、房主没能力，就借到装了模型的那台");
         assertNotEquals(requester, assign.to(), "超时过的那台不再问第二遍");
+    }
+
+    // ── 超时被取消：0 = 一直等 ──────────────────────────────────────────────
+
+    /**
+     * 超时被取消之后，一台慢机器可以一直算下去：服务端不许因为「等太久」就把活儿抢走。
+     *
+     * <p>这是「取消超时」的全部意义 —— Folia 那套模型推理动辄几十秒，固定超时会在它还没跑完时
+     * 就改派，白烧两台的算力，还把算得慢但在算的那台拉进黑名单。</p>
+     */
+    @Test
+    void aCancelledTimeoutLetsTheSlowMachineFinish() {
+        UUID requester = host.addPlayer("点歌的人");
+        // 房里确实有一台装了模型的机器闲着 —— 没有它这个测试就不成立（那是在测「没人可借」）。
+        UUID helper = idleHelperInRoom("装着模型的人");
+        capable(requester, "model");
+        capable(helper, "model");
+        capable(owner, "model");
+        ownerPlayingThenMemberQueues(requester, "点歌的人");
+        room.refreshAnalyst();
+        assertEquals(requester, assignFrame().to(), "测试前提：先问的是点歌人");
+        host.clear();
+
+        cfg.automixAssignTimeoutMs = 0L;   // 取消超时
+        room.tick();
+        room.tick();
+
+        assertNull(assignFrame(), "超时取消了就不该再改派：房里的模型机也别抢，让点歌人算完");
+    }
+
+    /**
+     * 但「取消超时」不等于「取消改派」：被指派人掉线之后必须换人。
+     *
+     * <p>这条是取消超时的<b>前提条件</b>，不是可选项。超时本来是唯一能兜住「那台机器彻底不响应」的
+     * 路径，关掉它就必须把「掉线」单独判一次 —— 否则一台离线机器能把整首歌卡在等计划的状态里，
+     * 比不做交叠还糟。注意这里用的是 {@code markOffline}（连接断开、座位保留），不是 {@code remove}
+     * （退房/被踢，那条路本来就会重新选人）。</p>
+     */
+    @Test
+    void aDroppedAnalystIsStillReassignedWithTheTimeoutCancelled() {
+        UUID requester = host.addPlayer("点歌的人");
+        UUID helper = idleHelperInRoom("装着模型的人");
+        capable(requester, "model");
+        capable(helper, "model");
+        incapable(owner);
+        ownerPlayingThenMemberQueues(requester, "点歌的人");
+        room.refreshAnalyst();
+        assertEquals(requester, assignFrame().to(), "测试前提：先问的是点歌人");
+        host.clear();
+
+        cfg.automixAssignTimeoutMs = 0L;   // 取消超时
+        room.markOffline(requester);       // 点歌人那台断线了
+        room.tick();
+
+        FakePlatform.Sent assign = assignFrame();
+        assertNotNull(assign, "掉线是明确信号，改派不该依赖超时");
+        assertEquals(helper, assign.to(), "点歌人掉线、房主没能力，就借到房间里能算的那台");
+        assertNotEquals(requester, assign.to(), "掉线的那台不再问");
     }
 
     // ── 交卷 ──────────────────────────────────────────────────────────────────
