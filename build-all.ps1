@@ -133,9 +133,9 @@ $results = @()
 foreach ($name in $targets.Keys) {
     $jdk = $targets[$name]
     $isTest = ($name -eq $TEST_PROJECT)
-    $task = if ($isTest) { 'test' } else { $Task }
-    Write-Host "==> $name  (JDK: $(Split-Path $jdk -Leaf), task: $task)"
-    "===== $name  jdk=$jdk  task=$task =====" | Out-File -Append -Encoding utf8 $log
+    $moduleTask = if ($isTest) { 'test' } else { $Task }
+    Write-Host "==> $name  (JDK: $(Split-Path $jdk -Leaf), task: $moduleTask)"
+    "===== $name  jdk=$jdk  task=$moduleTask =====" | Out-File -Append -Encoding utf8 $log
 
     # 为什么不直接 `& .\gradlew.bat ... | Out-File`：Gradle 每次新起守护进程时，守护进程会
     # 继承这条管道的写端，于是 gradlew.bat 早就退出了、BUILD SUCCESSFUL 也打完了，
@@ -152,7 +152,7 @@ foreach ($name in $targets.Keys) {
         $envPrefix = "set `"JAVA_TOOL_OPTIONS=-Djdk.net.hosts.file=$jdkHostsFile`" && "
         $extraArgs = ' --no-daemon'
     }
-    & cmd /c "cd /d `"$(Join-Path $root $name)`" && $envPrefix`"$gradlew`" `"-Dorg.gradle.java.home=$jdk`" $task --console=plain$extraArgs > `"$modOut`" 2>&1"
+    & cmd /c "cd /d `"$(Join-Path $root $name)`" && $envPrefix`"$gradlew`" `"-Dorg.gradle.java.home=$jdk`" $moduleTask --console=plain$extraArgs > `"$modOut`" 2>&1"
     $code = $LASTEXITCODE
     if (Test-Path $modOut) {
         # Gradle 的输出走的是控制台代码页（本机是 GBK），按本机 ANSI 读回来再统一写成 UTF-8，

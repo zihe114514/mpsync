@@ -113,4 +113,45 @@ class MpConfigTest {
         MpConfig.load(f);
         assertTrue(Files.exists(f), "首次启动要把带全部默认值的配置写出来");
     }
+
+    // ── 房间内无缝交接（automixLeadMs）─────────────────────────────────────────
+
+    /**
+     * 默认必须是开的。
+     *
+     * <p>它不属于「客户端与服主之间要口径一致的阈值」那一类，而是**一个功能开关**：提前换歌
+     * 意味着本曲最后这么多毫秒不再单独发声，会交叠的客户端把它叠在下一首底下，不支持的客户端
+     * 则直接切歌、尾巴少一截。默认打开是因为房间无缝要两端配套才成立 —— 服务端关着的话，
+     * 客户端那半连下一首的链接都拿不到，功能等于不存在。想保住整条尾巴的服主改成 0 即可，
+     * 上限与静默窗联动见 {@link #turningAutomixOnWidensTheGraceWindowAndIsClamped}。</p>
+     */
+    @Test
+    void roomAutomixIsOnByDefault() {
+        MpConfig cfg = new MpConfig();
+        assertEquals(4000L, cfg.automixLeadMs, "默认必须开着，否则客户端那半永远没有原料");
+    }
+
+    @Test
+    void aConfigFileFromBeforeThisFeatureGetsTheDefaultLead(@TempDir Path dir) throws IOException {
+        // 存量 mpsync.json 里没有 automixLeadMs 这个键，gson 保留字段默认值 —— 也就是新的默认提前量。
+        Path f = dir.resolve("mpsync.json");
+        Files.writeString(f, "{\"clockGraceMs\":4000,\"maxRoomMembers\":32}", StandardCharsets.UTF_8);
+
+        MpConfig cfg = MpConfig.load(f);
+        assertEquals(4000L, cfg.automixLeadMs, "老配置也要吃到新默认值，否则升级后房间还是无缝不起来");
+        assertEquals(5000L, cfg.clockGraceMs, "默认提前量生效时，静默窗必须联动抬到 L+1000");
+        assertEquals(32, cfg.maxRoomMembers, "其余键照旧");
+    }
+
+    @Test
+    void turningAutomixOnWidensTheGraceWindowAndIsClamped(@TempDir Path dir) throws IOException {
+        // 交叠发生在命令帧之后、正当全房开流：静默窗盖不住它的话，淡到一半就会被心跳硬跳打断。
+        Path f = dir.resolve("mpsync.json");
+        Files.writeString(f, "{\"automixLeadMs\":99999}", StandardCharsets.UTF_8);
+        MpConfig cfg = MpConfig.load(f);
+
+        assertEquals(12_000L, cfg.automixLeadMs, "提前量有上限，否则一首几分钟的歌会被吃掉太多");
+        assertTrue(cfg.clockGraceMs >= cfg.automixLeadMs + 1000L, "静默窗必须盖住整个交叠");
+        assertTrue(cfg.clockGraceMs <= 30_000L, "但静默窗本身仍有封顶");
+    }
 }

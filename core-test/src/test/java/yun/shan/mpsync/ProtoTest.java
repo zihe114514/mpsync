@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import yun.shan.mpsync.net.Proto;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -76,6 +77,9 @@ class ProtoTest {
         assertTrue(Proto.isValidSource(Proto.SOURCE_QQ));
         assertTrue(Proto.isValidSource(Proto.SOURCE_KUGOU));
         assertTrue(Proto.isValidSource(Proto.SOURCE_GD));
+        assertTrue(Proto.isValidSource(Proto.SOURCE_BILIBILI));
+        assertTrue(Proto.isValidSource(Proto.SOURCE_YOUTUBE));
+        assertTrue(Proto.KNOWN_SOURCES.stream().allMatch(Proto::isValidSource));
         assertTrue(Proto.isValidSource("my_platform2"));
 
         // 令牌要参与拼 source:songId 这个身份键，所以不许出现分隔符、大写和空串。
@@ -91,5 +95,15 @@ class ProtoTest {
     void neteaseStaysTheDefaultToken() {
         // 老客户端不发 source 字段，缺省必须继续是网易云，否则历史点歌全被判成无效平台。
         assertEquals("netease", Proto.SOURCE_NETEASE);
+    }
+
+    @Test
+    void knownSourcesCoverBothConnectedClients() {
+        // 这不是准入白名单，而是服主配置 allowedSources 时可照抄的参考。列表要同时覆盖
+        // MuoniumPlayer 的六个平台与 modernMP 的 provider id，避免新源只能靠口头约定。
+        assertEquals(List.of(
+                "netease", "qq", "kugou", "gd", "bilibili", "youtube",
+                "kuwo", "migu", "qianqian", "soda", "fivesing", "jamendo",
+                "joox", "apple", "customapi"), Proto.KNOWN_SOURCES);
     }
 }

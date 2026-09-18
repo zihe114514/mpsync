@@ -9,8 +9,10 @@
 反过来，非会员解析出的试听片段会被服务端按「链接实际时长 < 歌曲时长」拒绝。
 
 播放源**不限平台**：服务端既不解析也不取流，平台对它没有技术意义，客户端支持哪个平台，
-房间就能放哪个平台（`netease` / `qq` / `kugou` / `gd` 已在协议里留了常量，但不限于它们）。
-服主想收窄就填 `allowedSources`。
+房间就能放哪个平台。协议层维护的已知令牌参考为 `netease`、`qq`、`kugou`、`gd`、
+`bilibili`、`youtube`、`kuwo`、`migu`、`qianqian`、`soda`、`fivesing`、`jamendo`、
+`joox`、`apple`、`customapi`（见 `Proto.KNOWN_SOURCES`），但不限于它们。服主想收窄就填
+`allowedSources`；默认留空仍是不限制。
 
 ## 目录结构
 
@@ -234,8 +236,8 @@ JDK 映射表点一遍。
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `allowedSources` | `[]` | 留空 = 不限平台。填了就只放这些 |
-| `allowedHosts` | `[]` | 留空 = 只做公网校验（仍会挡回环／私网／链路本地） |
+| `allowedSources` | `[]` | 留空 = 不限平台。填了就只放这些；已知令牌见 `Proto.KNOWN_SOURCES` |
+| `allowedHosts` | `[]` | 留空 = 只做公网校验；收窄可参考 `SourceGuard.DEFAULT_HOSTS`（含 Bilibili / YouTube CDN） |
 | `minStreamDurationRatio` | 0.8 | 链接实际时长低于歌曲时长这个比例即判为试听片段 |
 | `urlWaitTimeoutMs` | 20000 | 等别人重新解析链接的上限。含一次跨机器往返，下限兜 12 秒 |
 | `clockGraceMs` | 4000 | 命令帧之后的时钟静默窗 |

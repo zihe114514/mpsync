@@ -41,6 +41,29 @@ public final class ClientProfile {
     /** 玩家是否愿意替别人解析（贡献 VIP）。默认关，必须显式打开。 */
     public boolean contributeVip;
 
+    /**
+     * 这台客户端能不能跑「房间交接计划」的音频分析（{@code RoomAutomix}）。
+     *
+     * <p>房间里换歌点必须全房一致，所以只能由一台机器算完上报、服务端裁决广播。问题是
+     * <b>「哪一台能算」跟「谁是房主」无关</b>：算力落在谁手上取决于客户端有没有这套代码、
+     * 有没有装模型、音频能不能解码。modernMP 压根没有这个概念，它永远算不出 —— 但它同样
+     * 要听房间里的无缝交接，于是它得借别人的机器。
+     *
+     * <p>所以这一位由客户端自报，服务端据此做<b>指派</b>（见 {@code Room#assignAnalyzer}）：
+     * 优先点歌人 → 其次房主 → 再次房间里任何一个能算的人。为 false 的人永远不会被指派，
+     * 也就不会白跑一次最重的后台任务。</p>
+     */
+    public boolean automixCapable;
+
+    /**
+     * 分析能力档位：{@code model} = 装了模型（Folia 推理，算得出 stem 交接、过渡族、频段倾斜）；
+     * {@code dsp} = 只有内置信号处理；空串 = 不能分析。
+     *
+     * <p>它只影响<b>指派顺序</b>（同一优先级里先问档位高的），不参与计划本体的校验 ——
+     * 计划里自己带着过渡族与曲线参数，执行端照着跑就行，不需要知道是哪种引擎算的。</p>
+     */
+    public String automixEngine = "";
+
     /** 本地正在听的曲目（不在房间里时也上报，全服在线态要用）。 */
     public String nowPlaying = "";
     public String nowArtist = "";
@@ -107,6 +130,14 @@ public final class ClientProfile {
             }
         }
         if (o.has("contributeVip")) contributeVip = Proto.bool(o, "contributeVip", contributeVip);
+        // 房间交接计划的分析能力。老客户端不发这两项，于是 automixCapable 保持上次的值
+        // （默认 false）—— 它们不会被指派，房间照常按「没人算得出」处理。
+        if (o.has("automixCapable")) automixCapable = Proto.bool(o, "automixCapable", automixCapable);
+        if (o.has("automixEngine")) {
+            String engine = Proto.str(o, "automixEngine", "");
+            automixEngine = engine == null ? "" : engine.trim().toLowerCase(Locale.ROOT);
+            if (automixEngine.length() > 16) automixEngine = automixEngine.substring(0, 16);
+        }
         if (o.has("nowPlaying")) nowPlaying = clip(Proto.str(o, "nowPlaying", ""));
         if (o.has("nowArtist")) nowArtist = clip(Proto.str(o, "nowArtist", ""));
         if (o.has("localPlaying")) localPlaying = Proto.bool(o, "localPlaying", localPlaying);
@@ -133,6 +164,8 @@ public final class ClientProfile {
         for (String s : vipSources) a.add(s);
         o.add("vipSources", a);
         o.addProperty("contributeVip", contributeVip);
+        o.addProperty("automixCapable", automixCapable);
+        o.addProperty("automixEngine", automixEngine == null ? "" : automixEngine);
         o.addProperty("nowPlaying", nowPlaying == null ? "" : nowPlaying);
         o.addProperty("nowArtist", nowArtist == null ? "" : nowArtist);
         o.addProperty("localPlaying", localPlaying);

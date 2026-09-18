@@ -473,6 +473,14 @@ public final class RoomManager {
                     // 心跳间隔也一并告知：客户端据此知道「多久没收到心跳算掉线」，
                     // 也能推出 driftConfirmHits 次确认大约要花多少时间。
                     hello.addProperty("timeBroadcastTicks", cfg.timeBroadcastTicks);
+                    // 房间内无缝交接的提前量；0 = 关闭（默认）。客户端据此决定房间内要不要
+                    // 提前下载下一首、换歌时交叠多长。老服务端不发这个字段，客户端按 0 处理，
+                    // 也就退化成现在的硬切。
+                    hello.addProperty("automixLeadMs", cfg.automixLeadMs);
+                    // 分析者指派的策略与超时。客户端的用处只有一个：把「谁在算」显示出来，
+                    // 以及知道自己该等多久。老客户端读不到，行为不变。
+                    hello.addProperty("automixAssignTimeoutMs", cfg.automixAssignTimeoutMs);
+                    hello.addProperty("automixAnnounceAnalyst", cfg.automixAnnounceAnalyst);
                     // ── v2：客户端要据此决定显示哪些页、哪些按钮 ──
                     hello.addProperty("channelEnabled", cfg.channelEnabled);
                     hello.addProperty("channelName", cfg.channelName);
@@ -514,7 +522,13 @@ public final class RoomManager {
                     presence.update(uuid, msg);
                     Room room = roomOf(uuid);
                     // 成员列表里的 Mod / VIP / 在听要跟着变，所以整房重画一次。
-                    if (room != null) room.broadcastState();
+                    // 顺带让房间重挑一次分析者：客户端的能力位（能不能跑交接计划的分析）
+                    // 很可能就是在这第一次 profile 里才到齐的，而换歌时的指派发生在它之前 ——
+                    // 不补这一下，房间里明明有能算的机器也会被判成「没人能算」。
+                    if (room != null) {
+                        room.refreshAnalyst();
+                        room.broadcastState();
+                    }
                 }
                 case Proto.C_PROGRESS -> {
                     // 心跳在房间外也会来 —— 全服在线态（谁正在听什么）就靠它。所以它不走
@@ -713,6 +727,15 @@ public final class RoomManager {
                     Proto.str(msg, "url", ""),
                     Proto.num(msg, "urlExpiresAt", 0L),
                     Proto.num(msg, "urlDuration", 0L));
+            // 交接计划。服务端只做校验与广播 —— 分析需要音频，只能在客户端做；
+            // 但交接点必须全房一致，所以由一台算出、服务端存下并转发。
+            // 「哪一台」不再是房主：服务端按「点歌人 → 房主 → 房间里任何能算的人」指派
+            // （见 Room#assignAnalyzer），被指派者用本帧交卷。认不出的人由 reportPlan 静默丢弃。
+            case Proto.C_AUTOMIX_PLAN -> room.reportPlan(uuid,
+                    Proto.num(msg, "entryId", 0L), Proto.obj(msg, "plan"));
+            // 被指派人放弃：当场改派下一台，不必干等到超时。
+            case Proto.C_ANALYZE_DECLINE -> room.declinePlan(uuid,
+                    Proto.num(msg, "entryId", 0L));
             default -> Net.error(uuid, "不支持的操作：" + op);
         }
     }

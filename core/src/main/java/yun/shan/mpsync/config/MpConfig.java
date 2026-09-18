@@ -41,6 +41,40 @@ public final class MpConfig {
      */
     public long clockGraceMs = 4000L;
     /**
+     * 房间内无缝曲目交接的提前量（毫秒）；0 = 关闭。
+     *
+     * <p>开启后服务端在「本曲结束前这么多毫秒」就把下一首置 0 并广播 {@code play}，
+     * 客户端在同一刻让下一首起播，于是本曲的尾巴与下一首的开头重叠。</p>
+     *
+     * <p>为什么提前的是<b>服务端</b>而不是客户端自己：房间只有一套权威时钟，
+     * {@code startEpoch} 决定下一首的 0 点落在哪个墙钟时刻。客户端若自行提前起播，它本机
+     * 下一首的位置就会比服务端多出这个提前量，随后每一发心跳都判它脱节、把它硬跳回去。
+     * 提前发生在服务端，两边对「下一首 0 点」的理解才仍然一致，时钟模型一行都不用改。</p>
+     *
+     * <p>为什么默认 4000（开启）：提前换歌意味着本曲最后这么多毫秒不再单独发声。会交叠的
+     * 客户端把它叠在下一首底下，听不出接缝；不会交叠的客户端（旧版本、modernMP）则直接切到
+     * 下一首 —— 对它来说就是尾巴少了一截。默认打开是因为房间无缝要两端配套才成立：服务端关着
+     * 的话，客户端那半连下一首的链接都拿不到，「提前下载」也就无从谈起，功能等于不存在。
+     * 想保住整条尾巴的服主把它设成 {@code 0} 即可，行为立刻退回旧版（原来的 250ms 判据）。</p>
+     */
+    public long automixLeadMs = 4000L;
+    /**
+     * 被指派去算交接计划的那台客户端有多久时间交卷（毫秒）。
+     *
+     * <p>超时就改派下一台。选得比一次分析的实际耗时长不少：真要算的机器要在几秒内完成
+     * 「解析下一首直链 → 下载 → 解码 → 读两首歌的 PCM → 出计划」，慢一点的机器十来秒是正常的，
+     * 而这首曲子有整首歌的时间可以等（计划只要赶在 {@link #automixLeadMs} 之前到就行）。</p>
+     *
+     * <p>被指派人主动拒绝（{@code analyze_decline}）时不走这个超时，立刻改派 —— 那是明确信号。</p>
+     */
+    public long automixAssignTimeoutMs = 15_000L;
+    /**
+     * 房间里没人能分析时，是否让服务端向全房说明「这一首不会有交叠」。
+     *
+     * <p>关掉只是少一帧提示；正确性不受影响（客户端本来就会因为拿不到计划而走降级路由）。</p>
+     */
+    public boolean automixAnnounceAnalyst = true;
+    /**
      * 软偏差阈值：客户端与服务端位置差超过这个值才值得处理，但只做静默微调（追/缓播放速度或
      * 小步纠偏），不许硬 seek。播放器缓冲抖动、解码延迟常年在 1~2 秒这个量级，硬跳只会更难听。
      */
@@ -83,8 +117,8 @@ public final class MpConfig {
      *
      * <p>服务端不解析链接也不取流，它转发的是点歌人自己解析出来的直链，所以平台对服务端没有
      * 技术意义 —— 客户端支持哪个平台，房间就能放哪个平台。这一项留着只是给服主一个收窄的开关
-     * （比如只想让房间放网易云就填 {@code ["netease"]}）。可用的令牌见
-     * {@link Proto#SOURCE_NETEASE} 一组常量，但不限于它们。</p>
+     * （比如只想让房间放网易云就填 {@code ["netease"]}）。可照抄的已知令牌见
+     * {@link Proto#KNOWN_SOURCES}，但不限于它们。</p>
      */
     public List<String> allowedSources = new ArrayList<>();
     /**
@@ -93,7 +127,8 @@ public final class MpConfig {
      * <p>之所以不再内置平台白名单：每加一个音乐平台都要改服务端，而客户端能支持的平台远多于
      * 服务端能维护的列表。留空不等于毫无把关 —— {@link SourceGuard#isPublicHttpUrl} 仍然会挡掉
      * 环回／私网／链路本地地址，所以房间不能被拿来让全房客户端探内网。想收窄到某几个平台时，
-     * 可以照抄 {@link SourceGuard#DEFAULT_HOSTS} 再增删。</p>
+     * 可以照抄 {@link SourceGuard#DEFAULT_HOSTS} 再增删；{@code customapi} 与其它返回
+     * 第三方 CDN 的源，需要按实际接口再补自己的域名。</p>
      */
     public List<String> allowedHosts = new ArrayList<>();
 
@@ -225,6 +260,17 @@ public final class MpConfig {
             if (cfg.resyncCooldownMs < 2000L) cfg.resyncCooldownMs = 2000L;
             if (cfg.driftConfirmHits < 1) cfg.driftConfirmHits = 1;
             if (cfg.driftConfirmHits > 10) cfg.driftConfirmHits = 10;
+            // 房间内交叠：提前换歌发生在命令帧之后，正当全房开流，所以静默窗必须盖得住它，
+            // 否则淡到一半就被心跳判成脱节、硬跳回去，听感比不做交叠还差。
+            if (cfg.automixLeadMs < 0L) cfg.automixLeadMs = 0L;
+            if (cfg.automixLeadMs > 12_000L) cfg.automixLeadMs = 12_000L;
+            if (cfg.automixLeadMs > 0L && cfg.clockGraceMs < cfg.automixLeadMs + 1000L) {
+                cfg.clockGraceMs = Math.min(30_000L, cfg.automixLeadMs + 1000L);
+            }
+            // 指派超时：太短会让慢机器每次都被改派（结果是谁都没算完），太长又让「借用别人电脑」
+            // 这条路每首白等太久。10~60 秒之间都合理。
+            if (cfg.automixAssignTimeoutMs < 5_000L) cfg.automixAssignTimeoutMs = 5_000L;
+            if (cfg.automixAssignTimeoutMs > 120_000L) cfg.automixAssignTimeoutMs = 120_000L;
             if (cfg.assumedUrlLifetimeMs < 60_000L) cfg.assumedUrlLifetimeMs = 60_000L;
             // 低于这个值时「向别的成员要链接」在物理上来不及，等于把功能关掉，所以兜底抬上来。
             if (cfg.urlWaitTimeoutMs < 12_000L) cfg.urlWaitTimeoutMs = 12_000L;
