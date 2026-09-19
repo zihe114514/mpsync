@@ -231,6 +231,74 @@ class RoomAutomixAssignTest {
                 "同样能算时先问档位高的：装了模型的能带来 stem 交接与过渡族");
     }
 
+    // ── 模型优先跨越角色：需求「即便房主也借用装了模型的机器」──────────────────
+    //
+    // 从前 pickAnalyst 只要点歌人 / 房主自报 capable 就直接选中，engineRank 只在第③档内部比较。
+    // modernMP 恒报 capable=true/engine="dsp"，于是没装模型的点歌人 / 房主会压过房里装了模型
+    // 的机器 ——「即便房主也借用推理」根本不成立。正确顺序：任意 model 都排在任意 dsp 之前。
+
+    @Test
+    void aModelCapableHelperBeatsADspRequester() {
+        UUID requester = host.addPlayer("点歌的人");
+        UUID model = idleHelperInRoom("装着模型的人");
+        capable(requester, "dsp");         // 点歌人只有内置信号处理（例如 modernMP）
+        capable(model, "model");           // 房里有台装了模型的机器闲着
+        incapable(owner);
+        ownerPlayingThenMemberQueues(requester, "点歌的人");
+        host.clear();
+
+        room.refreshAnalyst();
+
+        assertEquals(model, assignFrame().to(),
+                "点歌人只有 dsp、房里有 model 时，先借装了模型的那台，而不是让点歌人硬算");
+    }
+
+    @Test
+    void aModelCapableHelperBeatsADspOwner() {
+        UUID requester = host.addPlayer("点歌的人");
+        UUID model = idleHelperInRoom("装着模型的人");
+        incapable(requester);
+        capable(owner, "dsp");             // 房主只有内置信号处理
+        capable(model, "model");
+        ownerPlayingThenMemberQueues(requester, "点歌的人");
+        host.clear();
+
+        room.refreshAnalyst();
+
+        assertEquals(model, assignFrame().to(),
+                "房主只有 dsp、房里有 model 时，即便房主也要借用装了模型的那台");
+    }
+
+    @Test
+    void betweenTwoDspMachinesTheRequesterStillWins() {
+        UUID requester = host.addPlayer("点歌的人");
+        UUID helper = idleHelperInRoom("另一台只有 dsp");
+        capable(requester, "dsp");
+        capable(helper, "dsp");
+        capable(owner, "dsp");
+        ownerPlayingThenMemberQueues(requester, "点歌的人");
+        host.clear();
+
+        room.refreshAnalyst();
+
+        assertEquals(requester, assignFrame().to(),
+                "同档位（都只有 dsp）时角色决定顺序：点歌人先算");
+    }
+
+    @Test
+    void betweenADspRequesterAndADspOwnerTheRequesterWins() {
+        UUID requester = host.addPlayer("点歌的人");
+        capable(requester, "dsp");
+        capable(owner, "dsp");
+        ownerPlayingThenMemberQueues(requester, "点歌的人");
+        host.clear();
+
+        room.refreshAnalyst();
+
+        assertEquals(requester, assignFrame().to(),
+                "同为 dsp 时点歌人排在房主之前（谁点的歌用谁的电脑）");
+    }
+
     // ── 没人能算：不做假交叠 ──────────────────────────────────────────────────
 
     @Test
@@ -447,13 +515,14 @@ class RoomAutomixAssignTest {
         host.clear();
 
         // 被指派者交卷：他不是房主，但这份计划必须被采纳 —— 这正是这次改动的全部意义。
-        room.reportPlan(requester, entryId, plan(172_000L, 9_000L, 0L));
+        long fire = DURATION - 9_000L;
+        room.reportPlan(requester, entryId, plan(fire, 9_000L, 0L));
 
         JsonObject carried = host.last(Proto.S_QUEUE).getAsJsonObject("next").getAsJsonObject("plan");
         assertNotNull(carried, "非房主算出来的计划同样要广播给全房");
-        assertEquals(172_000L, carried.get("fireMillis").getAsLong());
+        assertEquals(fire, carried.get("fireMillis").getAsLong());
 
-        room.seek(172_000L);
+        room.seek(fire);
         room.tick();
         assertEquals(1, broadcasts(Proto.S_PLAY), "换歌点按被指派者算出的那份走");
     }
@@ -492,6 +561,52 @@ class RoomAutomixAssignTest {
         room.tick();
 
         assertEquals(0, broadcasts(Proto.S_PLAY), "entryId 对不上的计划必须丢弃");
+    }
+
+    // ── 房主抢跑：指派了别人时房主不能凭房主身份直通 ────────────────────────────
+    //
+    // mayReportPlan 里有条兼容老客户端的直通「isOwner(actor) → 放行」。它必须加 analyst == null
+    // 的前提：服务端已经把活儿派给房里装了模型的另一台时，房主（客户端侧 analyzingHere() =
+    // owner && !assignmentSeen，在第一帧 analyze_state 到达前为真）会抢先算完上报，把该借用的
+    // 那份计划挤掉。房主自己算不了（capable=false）时，这条直通是它唯一的入口，堵住才有意义。
+
+    @Test
+    void theOwnerCannotPreemptThePlanWhenAnalysisIsAssignedElsewhere() {
+        UUID requester = host.addPlayer("点歌的人");
+        UUID model = idleHelperInRoom("装着模型的人");
+        incapable(requester);
+        incapable(owner);                  // 房主自己算不了（modernMP / 没模型）
+        capable(model, "model");
+        long entryId = ownerPlayingThenMemberQueues(requester, "点歌的人");
+        room.refreshAnalyst();
+        assertEquals(model, assignFrame().to(), "测试前提：活儿派给了装模型的那台");
+        host.clear();
+
+        // 房主抢跑上报（它以为该自己算）—— 必须被拒，指派对象没变。
+        room.reportPlan(owner, entryId, plan(172_000L, 9_000L, 0L));
+
+        assertNull(room.current().automixPlan,
+                "指派给了别人时，房主不能靠房主身份把自己那份塞进来");
+        room.seek(172_000L);
+        room.tick();
+        assertEquals(0, broadcasts(Proto.S_PLAY), "被拒的计划不能拿来换歌");
+    }
+
+    /**
+     * 但没有指派（老服务端行为 / 全是老客户端）时，房主直通仍然放行 —— 这条兼容不能误伤。
+     */
+    @Test
+    void theOwnerPassthroughStillWorksWhenNobodyWasAssigned() {
+        // 全是老客户端：没有人报过 profile，legacyFallback 生效，指派会落到房主。
+        room.join(host.addPlayer("成员"), "成员");
+        room.enqueue(owner, "房主", playable("1"), false);
+        room.enqueue(owner, "房主", playable("2"), false);
+        long entryId = room.queue().get(0).entryId;
+        // 老服务端从不指派；这里模拟「还没指派」的窗口：清掉指派再让房主上报。
+        room.reportPlan(owner, entryId, plan(172_000L, 9_000L, 0L));
+
+        assertNotNull(room.current().automixPlan,
+                "没有指派别人时，房主上报的计划仍要被采纳（兼容老客户端）");
     }
 
     // ── 能力位晚到 ────────────────────────────────────────────────────────────

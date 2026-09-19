@@ -35,6 +35,23 @@ public final class Room {
     private static final int HISTORY_MAX = 50;
     /** Treat "within this much of the end" as finished — decoders rarely hit the exact ms. */
     private static final long END_EPSILON_MS = 250L;
+    /**
+     * 计划里 {@code fireMillis} 允许把交接点从曲末往前挪的最大量（= 交叠长度上限）。
+     *
+     * <p>与 {@link MpConfig#automixLeadMs} 的上限（{@code load()} 夹到 12000）同构：合法计划的
+     * 不变式是 {@code fire + overlap = dur} 且 {@code overlap ≤ 12s}，所以 {@code fire ≥ dur - 12s}。
+     * {@link #fireAt} 用它挡住把 {@code fireMillis} 报成「尾奏扫描窗口起点」之类的坏计划。</p>
+     */
+    private static final long MAX_LEAD_MS = 12_000L;
+    /**
+     * 计划里 {@code overlapMillis} 的合理上限，用于 {@link #fireAt} 的下限计算。
+     *
+     * <p>与客户端 {@code RoomAutomix.MAX_OVERLAP_MILLIS} 一致（60 秒）：交接点最早能落在
+     * {@code dur - overlap}，而一段交叠再长也不该超过一分钟（再长就不是混音而是串烧了）。
+     * 只用来防一个离谱的 {@code overlapMillis} 把 {@link #fireAt} 的下限撑穿，让坏计划得以
+     * 提前到曲子中段换歌。</p>
+     */
+    private static final long MAX_OVERLAP_MS = 60_000L;
 
     public final String id;
     public final String code;
@@ -101,6 +118,15 @@ public final class Room {
     private UUID analyst;
     /** 上面那次指派对应的是哪一首「下一首」；队首一变这份指派就作废。 */
     private long analystEntryId;
+    /**
+     * 当前这份 {@code current.automixPlan} 是为哪一首「下一首」算的（上报时的队首 entryId）。
+     *
+     * <p>计划描述的是「从 current 怎么进入 <b>那一首</b>」。插队 / 删歌 / 移动 / 清空都可能把队首
+     * 换成别的曲子，而计划挂在 current 上不会自动失效 —— 那样旧计划会被继续下发、并按<b>另一首</b>
+     * 的交接点换歌。所以队首一旦不再等于这个值，就作废整份计划、重新指派。见
+     * {@link #invalidatePlanIfHeadChanged()}。</p>
+     */
+    private long planTargetEntryId;
     /** 指派的时刻，用于超时改派。 */
     private long analystAssignedAt;
     /** 这一首已经指派过几轮（含改派），只用于日志与协议里的 {@code attempt}。 */
@@ -336,6 +362,8 @@ public final class Room {
         if (current == null) {
             startEntry(pollFront(entry), 0L);
         } else {
+            // 插队会把队首换成刚点的这首 —— 挂在 current 上、为原队首算的计划就作废了。
+            invalidatePlanIfHeadChanged();
             broadcastQueue();
             if (!entry.track.hasFreshUrl()) {
                 // 点歌人本机解析不出完整音频（多半是会员曲而他不是会员），所以这首歌是「裸」进
@@ -362,7 +390,11 @@ public final class Room {
 
     public boolean removeEntry(long entryId) {
         boolean removed = queue.removeIf(e -> e.entryId == entryId);
-        if (removed) broadcastQueue();
+        if (removed) {
+            // 删掉的可能正是队首（计划瞄准的那一首）—— 作废旧计划再广播。
+            invalidatePlanIfHeadChanged();
+            broadcastQueue();
+        }
         return removed;
     }
 
@@ -373,12 +405,16 @@ public final class Room {
         int target = Math.max(0, Math.min(queue.size() - 1, to));
         QueueEntry e = queue.remove(from);
         queue.add(target, e);
+        // 移动可能把别的曲子挪到队首 —— 旧计划瞄准的已不是队首了。
+        invalidatePlanIfHeadChanged();
         broadcastQueue();
         return true;
     }
 
     public void clearQueue() {
         queue.clear();
+        // 队列空了就没有「下一首」，挂着的计划失去意义。
+        invalidatePlanIfHeadChanged();
         broadcastQueue();
     }
 
@@ -444,8 +480,22 @@ public final class Room {
         JsonObject plan = current == null ? null : current.automixPlan;
         if (plan != null && mayAdvanceEarly()) {
             long fire = Proto.num(plan, "fireMillis", 0L);
-            // 交接点不能落到曲末之后：那样这一首会先播完，中间空出一段静默。
-            if (fire > 0L && fire <= dur - END_EPSILON_MS) return fire;
+            // 合法的交接点被夹在一个窗口里，越界的一律不信、退回配置提前量：
+            //   上限 `dur - END_EPSILON_MS`：不能落到曲末之后，否则这一首先播完、中间空出静默；
+            //   下限跟着计划自己的交叠长度走。交接点从曲末往前挪的极限就是「这份计划打算叠多长」：
+            //     内容驱动的交接在 fire 处开始把 A 淡出、B 淡入，A 的尾巴被这段交叠吃掉，所以合法
+            //     的 fire 不该早于 `dur - overlap`。
+            //   为什么不是固定的 12 秒：`automixLeadMs`（配置提前量）封顶 12 秒，但计划挑的是一段
+            //     完整的长尾奏/间奏 —— 客户端 Folia 交叠最长约 25 秒、RoomAutomix 允许到 60 秒。
+            //     用固定 12 秒当下限会把这些合法的长交叠计划误杀、退回硬切，把精心算好的无缝长过渡
+            //     砍掉。下限取 `dur - max(MAX_LEAD_MS, overlap)` 才两头都对：modernMP 那种「fire
+            //     报成曲末前 25 秒、overlap 却只有 5 秒」的坏计划（fire 远早于 dur - overlap）仍被
+            //     挡下，而 Folia 的长交叠计划照常放行。
+            long overlap = Proto.num(plan, "overlapMillis", 0L);
+            if (overlap < 0L) overlap = 0L;
+            if (overlap > MAX_OVERLAP_MS) overlap = MAX_OVERLAP_MS;   // 防一个离谱的 overlap 把下限撑穿
+            long floor = dur - Math.max(MAX_LEAD_MS, overlap);
+            if (fire >= floor && fire <= dur - END_EPSILON_MS) return fire;
         }
         return dur - advanceLead();
     }
@@ -494,11 +544,37 @@ public final class Room {
             return;
         }
         current.automixPlan = plan;
+        // 记下这份计划瞄准的是哪一首「下一首」。之后队首一旦变过（插队 / 删歌 / 移动），
+        // invalidatePlanIfHeadChanged() 就据此把它作废，免得按另一首的交接点换歌。
+        planTargetEntryId = nextEntryId;
         // 这一份已经到手，指派到此结束：清掉待办，免得超时又把它改派给别人、白算第二遍。
         analyst = null;
         analystEntryId = 0L;
         broadcastQueue();
         broadcastAnalyzeState();
+    }
+
+    /**
+     * 队首变了就作废挂在 current 上的计划并重新指派。
+     *
+     * <p>计划描述的是「从 current 进入<b>某一首特定的下一首</b>」（{@link #planTargetEntryId}）。
+     * 插队（{@code queue.add(0, …)}）、删歌、移动、清空、抢播都可能把队首换成别的曲子，
+     * 而计划挂在 current 上不随之失效。不作废的话：{@link #nextJson()} 继续把旧计划下发给
+     * 新的下一首、{@link #fireAt}/{@link #plannedCue} 用为<b>另一首</b>算的 fire/cue 换歌、
+     * {@link #mayReportPlan} 又因 {@code automixPlan != null} 把新队首该有的计划永远挡死。</p>
+     *
+     * <p>所有会改动队首的入口在广播歌单之前都要调它一次。current 尚未开播（计划本就为 null）、
+     * 或队首仍是原来那一首时，它什么都不做。</p>
+     */
+    private void invalidatePlanIfHeadChanged() {
+        if (current == null || current.automixPlan == null) return;
+        long head = queue.isEmpty() ? 0L : queue.get(0).entryId;
+        if (head == planTargetEntryId) return;   // 队首没变，计划仍然有效
+        current.automixPlan = null;
+        planTargetEntryId = 0L;
+        // 新队首需要一份新计划：清掉旧指派并当场重新选人（换歌尚早，还来得及算）。
+        clearAnalyst();
+        assignAnalyzer(false);
     }
 
     /**
@@ -515,7 +591,10 @@ public final class Room {
         if (queue.isEmpty() || queue.get(0).entryId != nextEntryId) return false;
         if (current.automixPlan != null) return false;                 // 已经有一份了，不再接受第二份
         if (analyst != null && analyst.equals(actor)) return true;     // ① 就是我叫的那一台
-        if (isOwner(actor)) return true;                               // ② 兼容：老客户端只有房主会报
+        // ② 兼容老客户端：老版本只在房主那台上报，服务端从不指派（analyst 恒 null）时放行它。
+        //    但**必须加 analyst == null** —— 否则服务端已经把活儿派给房里装了模型的另一台时，
+        //    房主会在第一帧 analyze_state 到达前抢先算完上报，把该借用的那份计划挤掉。
+        if (analyst == null && isOwner(actor)) return true;
         return analyzable(actor);                                      // ③ 兜底：真的能算的人抢先算完了
     }
 
@@ -649,28 +728,49 @@ public final class Room {
         // 线索。但只要有人报过档案（哪怕报的是「我不能算」），就说明房间里跑的是懂这套协议的
         // 客户端，此时必须以能力位为准，不能把一台明确说了「我不行」的机器硬派上去。
         boolean legacyFallback = !anyoneReportedProfile();
-        // ① 点歌人：他点的歌他先算。
         QueueEntry head = queue.isEmpty() ? null : queue.get(0);
         UUID requester = head == null ? null : head.requester;
-        if (requester != null && online(requester) && !refusedAnalysts.contains(requester)
-                && (analyzable(requester) || (legacyFallback && isOwner(requester)))) {
-            return requester;
+
+        // 老客户端：没有能力位可依，只认房主身份（点歌人恰好是房主时也走这条）。这与
+        // 「老版本只在房主那台上报」的历史行为一致。
+        if (legacyFallback) {
+            if (requester != null && online(requester) && !refusedAnalysts.contains(requester)
+                    && isOwner(requester)) {
+                return requester;
+            }
+            if (owner != null && online(owner) && !refusedAnalysts.contains(owner)) {
+                return owner;
+            }
+            return null;
         }
-        // ② 房主：房间里默认的那台（同样只在老客户端兜底时无条件算他能算）。
-        if (owner != null && online(owner) && !refusedAnalysts.contains(owner)
-                && (analyzable(owner) || legacyFallback)) {
-            return owner;
-        }
-        // ③ 其他能算的人，档位高的优先。
+
+        // 有能力位：**模型优先**，跨「点歌人 / 房主 / 任意成员」统一排序。评分先比引擎档位
+        // （model > dsp），再比角色（点歌人 > 房主 > 其他）。于是实际顺序是：
+        //   点歌人(model) → 房主(model) → 任意(model) → 点歌人(dsp) → 房主(dsp) → 任意(dsp)。
+        // 这才满足需求「即便房主也借用装了模型的机器」—— 从前的写法里点歌人 / 房主只要自报
+        // capable 就直接选中，engineRank 只在第三档内部比较，装了模型的机器永远抢不过它们。
+        // 同分（同档位同角色）用 members 的插入顺序（加入房间的先后）稳定取第一个，可复现。
         UUID best = null;
-        int bestRank = -1;
+        int bestScore = Integer.MIN_VALUE;
         for (Member m : members.values()) {
             if (!m.online || refusedAnalysts.contains(m.uuid)) continue;
             if (!analyzable(m.uuid)) continue;
-            int rank = engineRank(m.uuid);
-            if (rank > bestRank) { bestRank = rank; best = m.uuid; }
+            int score = analystScore(m.uuid, requester);
+            if (score > bestScore) { bestScore = score; best = m.uuid; }
         }
         return best;
+    }
+
+    /**
+     * 指派评分：引擎档位为主（{@code model} = 2、{@code dsp} = 1），角色为辅
+     * （点歌人 +2、房主 +1、其他 0）。档位差（×10）永远压过角色差，保证「装了模型的任意成员」
+     * 排在「只有内置信号处理的点歌人 / 房主」之前。
+     */
+    private int analystScore(UUID uuid, UUID requester) {
+        int score = engineRank(uuid) * 10;
+        if (uuid.equals(requester)) score += 2;
+        else if (isOwner(uuid)) score += 1;
+        return score;
     }
 
     /** 能力档位：装了模型（{@code model}）排最前，内置信号处理（{@code dsp}）次之。 */
@@ -839,6 +939,7 @@ public final class Room {
         analystEntryId = 0L;
         analystAssignedAt = 0L;
         analystAttempt = 0;
+        planTargetEntryId = 0L;   // 新 current 的 automixPlan 天然为 null，计划瞄准也要归零
         refusedAnalysts.clear();
         // 换歌是最容易引发集体误判的时刻：全房都在开流，位置必然是散的。
         markCommand();
