@@ -264,7 +264,9 @@ public final class Room {
         votes.removeIf(v -> v.kind == VoteSession.Kind.KICK && uuid.equals(v.target));
         // 正被他算着的那一份没了下文：当场重新选人，别让这首曲子一直等到换歌。
         if (uuid.equals(analyst)) {
-            analyst = null;
+            // 不预先把 analyst 清空：assignAnalyzer 靠「分析者变了才广播」来通知全房。若这里先置
+            // null，当走掉的人正是唯一能算的那台时，assignAnalyzer 会以为「本来就没有分析者」
+            // 而不发空的 S_ANALYZE_STATE，全房就把他一直显示成「分析中」直到换歌。
             analystAssignedAt = 0L;
             assignAnalyzer(false);
         }
@@ -595,7 +597,9 @@ public final class Room {
         //    但**必须加 analyst == null** —— 否则服务端已经把活儿派给房里装了模型的另一台时，
         //    房主会在第一帧 analyze_state 到达前抢先算完上报，把该借用的那份计划挤掉。
         if (analyst == null && isOwner(actor)) return true;
-        return analyzable(actor);                                      // ③ 兜底：真的能算的人抢先算完了
+        // ③ 兜底：真的能算的人抢先算完了。同样**必须加 analyst == null** —— 已经派给了某一台时，
+        //    另一台能算的成员抢先上报不该顶掉被指派者，否则「模型优先」的指派就形同虚设。
+        return analyst == null && analyzable(actor);
     }
 
     /**

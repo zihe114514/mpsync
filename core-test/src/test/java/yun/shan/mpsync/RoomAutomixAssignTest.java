@@ -502,6 +502,32 @@ class RoomAutomixAssignTest {
         assertNotEquals(requester, assign.to(), "掉线的那台不再问");
     }
 
+    /**
+     * 被指派者<b>退房</b>（不是掉线）、而房里再没有第二台能算时，必须告诉全房「现在没人算了」。
+     *
+     * <p>{@code remove} 里若抢先把 {@code analyst} 置 null，{@code assignAnalyzer} 的
+     * 「分析者变了才广播」判据就会以为本来就没有分析者，空的 {@code S_ANALYZE_STATE} 发不出去 ——
+     * 全房会把已经走掉的人一直显示成「分析中」直到换歌。</p>
+     */
+    @Test
+    void whenTheAssignedAnalystLeavesAndNobodyCanReplaceThemTheRoomIsToldNobodyIsAnalyzing() {
+        UUID requester = host.addPlayer("点歌的人");
+        UUID helper = idleHelperInRoom("装着模型的人");
+        incapable(requester);
+        incapable(owner);
+        capable(helper, "model");
+        ownerPlayingThenMemberQueues(requester, "点歌的人");
+        room.refreshAnalyst();
+        assertEquals(helper, assignFrame().to(), "测试前提：房里唯一能算的那台被指派");
+        host.clear();
+
+        room.remove(helper);               // 他退房了，房里再没有能算的人
+
+        JsonObject state = host.last(Proto.S_ANALYZE_STATE);
+        assertNotNull(state, "唯一分析者退房后必须广播一次，否则界面一直显示他在「分析中」");
+        assertEquals("", state.get("analyst").getAsString(), "此刻确实没人在算了");
+    }
+
     // ── 交卷 ──────────────────────────────────────────────────────────────────
 
     @Test
@@ -607,6 +633,36 @@ class RoomAutomixAssignTest {
 
         assertNotNull(room.current().automixPlan,
                 "没有指派别人时，房主上报的计划仍要被采纳（兼容老客户端）");
+    }
+
+    /**
+     * 第③条兜底（「能算的人抢先算完了」）同样必须以「还没指派」为前提。
+     *
+     * <p>它和房主直通是同一类抢跑：服务端已经把活儿派给了某一台（例如点歌人），另一台<b>也能算</b>
+     * 的成员却在第一帧 analyze_state 到达前就算完上报了。若放行，被指派者那份（可能档位更高、
+     * 带了 stem 交接）就会被顶掉，「模型优先 + 服务端指派」形同虚设。所以这里也堵死：
+     * 已指派给别人时，非被指派者即便自报能算也不得抢报。</p>
+     */
+    @Test
+    void aCapableMemberWhoWasNotAssignedCannotPreemptTheAssignedAnalyst() {
+        UUID requester = host.addPlayer("点歌的人");
+        UUID helper = idleHelperInRoom("另一台能算的人");
+        capable(requester, "model");
+        capable(helper, "model");
+        incapable(owner);
+        long entryId = ownerPlayingThenMemberQueues(requester, "点歌的人");
+        room.refreshAnalyst();
+        assertEquals(requester, assignFrame().to(), "测试前提：活儿派给了点歌人");
+        host.clear();
+
+        // 另一台能算的成员抢跑上报（它没被指派）—— 必须被拒。
+        room.reportPlan(helper, entryId, plan(172_000L, 9_000L, 0L));
+
+        assertNull(room.current().automixPlan,
+                "已指派给别人时，另一台能算的成员不能靠「我也能算」把自己那份塞进来");
+        room.seek(172_000L);
+        room.tick();
+        assertEquals(0, broadcasts(Proto.S_PLAY), "被拒的计划不能拿来换歌");
     }
 
     // ── 能力位晚到 ────────────────────────────────────────────────────────────
