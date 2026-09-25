@@ -38,8 +38,44 @@ public final class ClientProfile {
      */
     public final Set<String> vipSources = new LinkedHashSet<>();
 
+    /**
+     * 客户端自报的<b>真会员</b>平台令牌集合（报文里的 {@code member}）。
+     *
+     * <p>只放客户端确定为真会员的；本机查不到档位的平台干脆不出现 —— 这里宁可少报也不能谎报，
+     * 谎报会重新制造这次要修的假信号（把人误算进「愿意贡献 VIP」，等来一条试听片段）。</p>
+     */
+    public final Set<String> memberSources = new LinkedHashSet<>();
+
+    /**
+     * 本机现在能给出<b>完整版</b>音频的平台令牌集合（报文里的 {@code resolvable}）。
+     *
+     * <p>含两路：「这个平台本来不卖会员」（买了也不能更完整，登录即完整版）和「靠 LX 脚本能解」。
+     * 它是「这台机器有没有希望答上」（{@link #canResolve}）的依据，与「是不是会员」无关。</p>
+     */
+    public final Set<String> resolvableSources = new LinkedHashSet<>();
+
+    /**
+     * {@link #resolvableSources} 的子集：只有靠本机导入的 LX 自定义源才解得出的平台（{@code viaLx}）。
+     *
+     * <p>单独成集是因为裁决要按它分先后：本家会员解出来的直链更稳，而且动用 LX 会消耗
+     * 第三方接口额度 —— 能先问本家就先问本家。</p>
+     */
+    public final Set<String> viaLxSources = new LinkedHashSet<>();
+
     /** 玩家是否愿意替别人解析（贡献 VIP）。默认关，必须显式打开。 */
     public boolean contributeVip;
+
+    /** 是否愿意用 LX 脚本替房间解歌。与 {@link #contributeVip} 完全独立，各开各的。 */
+    public boolean contributeLx;
+
+    /**
+     * 这台客户端是否报过 {@code member} / {@code resolvable} / {@code viaLx} 里的任意一个。
+     *
+     * <p>贡献判据必须区分「报了空集」（真的不是会员、也没有完整版路）和「老客户端压根不发」
+     * —— 两者在线报文里长得一模一样，但前者的贡献资格该剥掉、后者不该。没有这一位，
+     * 改动会把所有没升级客户端的贡献者资格悄悄清零。</p>
+     */
+    public boolean capabilityKnown;
 
     /**
      * 这台客户端能不能跑「房间交接计划」的音频分析（{@code RoomAutomix}）。
@@ -73,9 +109,42 @@ public final class ClientProfile {
 
     public boolean hasVip() { return !vipSources.isEmpty(); }
 
+    /**
+     * 这台机器<b>有希望</b>答上：登录了该平台、能给出完整版音频、或靠 LX 解得出，三条并集。
+     *
+     * <p>老客户端只报 {@code vip}，其余两集恒空，判据自然退化为改动前的「登录了这个平台」。</p>
+     */
     public boolean canResolve(String source) {
         if (source == null) return false;
-        return vipSources.contains(source.trim().toLowerCase(Locale.ROOT));
+        String s = source.trim().toLowerCase(Locale.ROOT);
+        return vipSources.contains(s) || resolvableSources.contains(s) || viaLxSources.contains(s);
+    }
+
+    /**
+     * 「贡献 VIP」档：愿意贡献，且该平台是真会员、或不经 LX 就有完整版路
+     * （「本来不卖会员」的那类因此也算 —— 它给得出完整版，只是没有会员可买）。
+     *
+     * <p>只登录、非会员、又没有 LX 路的人<b>不</b>算：他答出来的是试听片段，会把整首歌
+     * 截短给全房 —— 这正是这次要修的假信号。老客户端没报过新数组时按改动前判据
+     * （愿意 + 登录了该平台）处理，行为一字不变。</p>
+     */
+    public boolean contributesVip(String source) {
+        if (!contributeVip || source == null) return false;
+        String s = source.trim().toLowerCase(Locale.ROOT);
+        if (!capabilityKnown) return vipSources.contains(s);
+        return memberSources.contains(s)
+                || (resolvableSources.contains(s) && !viaLxSources.contains(s));
+    }
+
+    /** 「贡献 LX」档：愿意用 LX 脚本替房间解歌，且该平台确实只有靠 LX 才解得出。 */
+    public boolean contributesLx(String source) {
+        if (!contributeLx || source == null) return false;
+        return viaLxSources.contains(source.trim().toLowerCase(Locale.ROOT));
+    }
+
+    /** 愿意并且有能力替房间解析这个平台的曲子：上面两档的并集。 */
+    public boolean contributes(String source) {
+        return contributesVip(source) || contributesLx(source);
     }
 
     /** 展示名：客户端报了就用它，否则按已知标识翻译，都不认识就叫「未知客户端」。 */
@@ -113,23 +182,15 @@ public final class ClientProfile {
         if (ver != null && !ver.isBlank()) modVersion = clip(ver);
         int p = Proto.i32(o, "proto", proto);
         if (p > 0) proto = p;
-        if (o.has("vip")) {
-            vipSources.clear();
-            JsonArray a = Proto.arr(o, "vip");
-            if (a != null) {
-                for (int i = 0; i < a.size() && vipSources.size() < 24; i++) {
-                    try {
-                        String s = a.get(i).getAsString();
-                        if (s != null && Proto.isValidSource(s.trim().toLowerCase(Locale.ROOT))) {
-                            vipSources.add(s.trim().toLowerCase(Locale.ROOT));
-                        }
-                    } catch (Throwable ignored) {
-                        // 一条坏元素不该让整份上报作废。
-                    }
-                }
-            }
-        }
+        // 只覆盖报文里真带来的平台集合；老客户端不发就保持原值，别把缺字段当成空集。
+        applySources(o, "vip", vipSources);
+        // 「报过任意一个新数组」和「老客户端压根不发」必须能区分开，贡献判据靠它选新旧语义。
+        if (o.has("member") || o.has("resolvable") || o.has("viaLx")) capabilityKnown = true;
+        applySources(o, "member", memberSources);
+        applySources(o, "resolvable", resolvableSources);
+        applySources(o, "viaLx", viaLxSources);
         if (o.has("contributeVip")) contributeVip = Proto.bool(o, "contributeVip", contributeVip);
+        if (o.has("contributeLx")) contributeLx = Proto.bool(o, "contributeLx", contributeLx);
         // 房间交接计划的分析能力。老客户端不发这两项，于是 automixCapable 保持上次的值
         // （默认 false）—— 它们不会被指派，房间照常按「没人算得出」处理。
         if (o.has("automixCapable")) automixCapable = Proto.bool(o, "automixCapable", automixCapable);
@@ -170,6 +231,27 @@ public final class ClientProfile {
         o.addProperty("nowArtist", nowArtist == null ? "" : nowArtist);
         o.addProperty("localPlaying", localPlaying);
         return o;
+    }
+
+    /**
+     * 吸收一个平台令牌数组：缺 key 时整集保持原值（老客户端不发 = 不知道，不是「为空」），
+     * 来了才整体替换。服务端对令牌不透明，只校验格式；一条坏元素不该让整份上报作废。
+     */
+    private static void applySources(JsonObject o, String key, Set<String> out) {
+        if (!o.has(key)) return;
+        out.clear();
+        JsonArray a = Proto.arr(o, key);
+        if (a == null) return;
+        for (int i = 0; i < a.size() && out.size() < 24; i++) {
+            try {
+                String s = a.get(i).getAsString();
+                if (s != null && Proto.isValidSource(s.trim().toLowerCase(Locale.ROOT))) {
+                    out.add(s.trim().toLowerCase(Locale.ROOT));
+                }
+            } catch (Throwable ignored) {
+                // 半路坏元素只丢掉这一条，后面的照收。
+            }
+        }
     }
 
     private static String clip(String s) {

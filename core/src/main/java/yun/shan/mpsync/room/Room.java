@@ -972,8 +972,9 @@ public final class Room {
      * 让客户端（重新）解析一条取流链接。
      *
      * <p>这是「非会员点歌，房间里的会员代为解析」的实现：服务端自己没有任何平台会话，所有链接
-     * 都来自成员。收到请求的客户端只有在能解析出<b>完整</b>音频时才应答 —— 非会员解析到试听
-     * 片段会主动沉默，所以最终被采纳的一定是某个会员成员的链接。</p>
+     * 都来自成员。收到请求的客户端只有在能解析出<b>完整</b>音频时才应答 —— 只登录不是会员的人
+     * 解析到试听片段会主动沉默，所以最终被采纳的一定出自答得上完整版的人（本家会员、本来
+     * 不卖会员的平台，或靠 LX 自定义源的贡献者）。</p>
      *
      * @param quiet 播放未中断时的预解析／续签走 true —— 不发聊天提示，因为并没有卡住
      */
@@ -999,9 +1000,9 @@ public final class Room {
         m.addProperty("name", entry.track.name);
 
         // ② 再问客户端。顺序即「谁最可能答得上」：
-        //    贡献 VIP 且装了这个平台的成员 → 装了这个平台的成员 → 点歌人 → 管理者 → 所有人。
+        //    贡献 VIP 的成员 → 贡献 LX 的成员 → 装了这个平台的成员 → 点歌人 → 管理者 → 所有人。
         //
-        //    为什么把贡献者放最前：他们明确表示愿意替房间解析，而且档案里说明了自己登录了这个
+        //    为什么把贡献者放最前：他们明确表示愿意替房间解析，而且档案里说明了自己答得上这个
         //    平台。先问一次注定能答上的人，比广播给全房再等谁碰巧是会员要快得多，也少打扰。
         //
         //    例外：曲目压根没有链接，说明点歌人刚刚已经试过并且失败了（非会员只解析到试听片段，
@@ -1012,7 +1013,16 @@ public final class Room {
         PresenceRegistry pr = presence;
         if (pr != null && cfg.preferContributors) {
             for (Member mem : members.values()) {
-                if (mem.online && pr.contributes(mem.uuid, source)) targets.add(mem.uuid);
+                if (mem.online && pr.contributesVip(mem.uuid, source)) targets.add(mem.uuid);
+            }
+            // 「贡献 LX」一层。排在「贡献 VIP」之后：本家会员解出来的直链更稳（官方 CDN、
+            // 时长完整、过期时间也更从容），而且先问 LX 会白白消耗第三方接口的额度 ——
+            // 同一个平台上本家答得上时不该动用到它。但 LX 贡献者仍然远比「装了但不保证
+            // 肯答」的第三层可靠，所以排在那之前。
+            for (Member mem : members.values()) {
+                if (mem.online && pr.contributesLx(mem.uuid, source) && !targets.contains(mem.uuid)) {
+                    targets.add(mem.uuid);
+                }
             }
             for (Member mem : members.values()) {
                 if (mem.online && pr.canResolve(mem.uuid, source) && !targets.contains(mem.uuid)) {

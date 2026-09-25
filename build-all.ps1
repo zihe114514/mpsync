@@ -1,5 +1,5 @@
 ﻿<#
-    mpsync 服务端 mod —— core 单元测试 + 十六个目标一次全构建，产物统一汇总。
+    mpsync 服务端 mod —— core 单元测试 + 二十个目标一次全构建，产物统一汇总。
 
     为什么需要这个脚本：所有模块都不在 gradle.properties 里钉 org.gradle.java.home
     （刻意的：那会把某台机器的绝对路径写进工程，之前 modernMP 就是这么被一条失效路径卡住的；
@@ -13,7 +13,7 @@
       * javac --release 的目标 —— 26.2 那一批要 release 25，必须真的有一个 JDK 25。
 
     顺序是刻意的：
-      1. core-test 打头，纯 JVM 秒级跑完。房间逻辑坏了就别浪费十几分钟去构建十六个模块；
+      1. core-test 打头，纯 JVM 秒级跑完。房间逻辑坏了就别浪费十几分钟去构建二十个模块；
       2. fabric / paper 八个，最快也最稳，先出货；
       3. neoforge 四个；
       4. forge 四个放最后（对网络和 forge_gradle 缓存最挑），挂了也不影响前面的产物。
@@ -65,6 +65,11 @@ $targets = [ordered]@{
     '1.21.1forge'     = $JDK21
     '1.21.11forge'    = $JDK21
     '26.2forge'       = $JDK25   # ForgeGradle 7.x
+    # 26.3 家族：目标运行时同样是 Java 25（version json 的 javaVersion.majorVersion=25）。
+    '26.3fabric'      = $JDK25
+    '26.3paper'       = $JDK25
+    '26.3neoforge'    = $JDK25
+    '26.3forge'       = $JDK25
 }
 
 # core-test 只跑测试，也不参与产物汇总（它不产出可安装的 jar）。
@@ -80,7 +85,7 @@ $TEST_PROJECT = 'core-test'
 # http.* / https.* / java.net.* / javax.net.ssl.* / jdk.tls.* 这几类前缀，jdk.net.hosts.file 不在其中；
 # 环境变量则是子进程天然继承的。配 --no-daemon 是因为 fork 继承的是**守护进程**的环境，
 # 复用一个早先没带这个变量启动的守护进程就白搭了。
-$FG7_MODULES = @('1.21.11forge', '26.2forge')
+$FG7_MODULES = @('1.21.11forge', '26.2forge', '26.3forge')
 
 if ($TestOnly) { $Only = @($TEST_PROJECT) }
 
@@ -103,10 +108,10 @@ foreach ($jdk in ($targets.Values | Select-Object -Unique)) {
 $root = $PSScriptRoot
 
 # 构建前先跑一遍仓库自检（check-repo.ps1）：不联网、不起 Gradle，秒级出结果。
-# 配置口径漂了（十六个模块版本号不一致、产物名不合约定、minecraft_version 与目录名对不上、
+# 配置口径漂了（二十个模块版本号不一致、产物名不合约定、minecraft_version 与目录名对不上、
 # core 里被写进一行 net.minecraft.*、又被塞回某台机器的 JDK 绝对路径）都会在这里被挡住。
 # 放在最前面的理由和 core-test 一样：这类问题花十几分钟构建完再发现，代价太大 ——
-# 更糟的是配置漂了还能构建成功，只是发出去的十六个 jar 彼此不是一套。
+# 更糟的是配置漂了还能构建成功，只是发出去的二十个 jar 彼此不是一套。
 if (-not $SkipChecks) {
     & (Join-Path $root 'check-repo.ps1')
     if ($LASTEXITCODE -ne 0) {
@@ -140,7 +145,7 @@ foreach ($name in $targets.Keys) {
     # 为什么不直接 `& .\gradlew.bat ... | Out-File`：Gradle 每次新起守护进程时，守护进程会
     # 继承这条管道的写端，于是 gradlew.bat 早就退出了、BUILD SUCCESSFUL 也打完了，
     # PowerShell 的管道还在等那个永远不会关的写端 —— 整个脚本就那么挂住（实测挂过五分钟以上，
-    # 这个仓换三种 JDK 构建十六个模块，新起守护进程是常态）。
+    # 这个仓换三种 JDK 构建二十个模块，新起守护进程是常态）。
     # 改成让 cmd 把输出重定向到文件：没有管道，PowerShell 只需要等 cmd 退出。
     $modOut = Join-Path ([System.IO.Path]::GetTempPath()) "mpsync-build-$name.log"
     Remove-Item $modOut -ErrorAction SilentlyContinue
@@ -163,7 +168,7 @@ foreach ($name in $targets.Keys) {
         Remove-Item $modOut -ErrorAction SilentlyContinue
     }
 
-    # core 的单元测试是闸门：房间逻辑坏了就没有必要再花十几分钟构建十六个模块。
+    # core 的单元测试是闸门：房间逻辑坏了就没有必要再花十几分钟构建二十个模块。
     if ($isTest -and $code -ne 0) {
         Write-Host "core 单元测试失败，已中止后续构建 —— 详见 $log" -ForegroundColor Red
         exit 1
@@ -180,7 +185,7 @@ foreach ($name in $targets.Keys) {
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
     if (-not $NoCollect -and $jar) {
-        # 汇总名带模块前缀：十六个 jar 平铺在一个目录里，1.21.1 与 1.21.11、forge 与 neoforge
+        # 汇总名带模块前缀：二十个 jar 平铺在一个目录里，1.21.1 与 1.21.11、forge 与 neoforge
         # 的产物名很容易看混，前缀是唯一能一眼分清来源的东西。
         $distName = "$name`__$($jar.Name)"
         # 只清这个模块自己的旧产物，别碰别的模块。

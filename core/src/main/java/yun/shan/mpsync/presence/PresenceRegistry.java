@@ -51,10 +51,22 @@ public final class PresenceRegistry {
         profiles.clear();
     }
 
-    /** 这个玩家愿不愿意、并且有能力替房间解析这个平台的曲子。 */
+    /** 这个玩家愿不愿意、并且有能力替房间解析这个平台的曲子（VIP 与 LX 两档的并集）。 */
     public boolean contributes(UUID uuid, String source) {
         ClientProfile p = get(uuid);
-        return p != null && p.contributeVip && p.canResolve(source);
+        return p != null && p.contributes(source);
+    }
+
+    /** 「贡献 VIP」档：真会员或不经 LX 就有完整版路。取流分层里排在「贡献 LX」之前。 */
+    public boolean contributesVip(UUID uuid, String source) {
+        ClientProfile p = get(uuid);
+        return p != null && p.contributesVip(source);
+    }
+
+    /** 「贡献 LX」档：愿意且只能靠本机 LX 自定义源替房间解该平台。 */
+    public boolean contributesLx(UUID uuid, String source) {
+        ClientProfile p = get(uuid);
+        return p != null && p.contributesLx(source);
     }
 
     /** 有能力解析（不管愿不愿意贡献）——排在贡献者后面问。 */

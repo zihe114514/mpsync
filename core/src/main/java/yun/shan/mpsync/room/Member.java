@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import yun.shan.mpsync.presence.ClientProfile;
 
+import java.util.Collection;
 import java.util.UUID;
 
 /** One participant of a {@link Room}. Mutated on the server thread only. */
@@ -66,12 +67,25 @@ public final class Member {
         o.addProperty("modVersion", profile == null ? "" : profile.modVersion);
         o.addProperty("vip", profile != null && profile.hasVip());
         o.addProperty("contributeVip", profile != null && profile.contributeVip);
-        JsonArray vip = new JsonArray();
-        if (profile != null) for (String s : profile.vipSources) vip.add(s);
-        o.add("vipSources", vip);
+        o.add("vipSources", sourcesJson(profile == null ? null : profile.vipSources));
+        // 能力位原样透出（member / resolvable / viaLx 是客户端自报的三个集合，automix* 是
+        // 分析能力）——两套客户端拿它们画成员行上的 chip。服务端不解读、不加工：这些集合
+        // 的语义只有报上来它们的客户端自己说得清，这里过一道只会引入第三种口径。
+        o.addProperty("automixCapable", profile != null && profile.automixCapable);
+        o.addProperty("automixEngine", profile == null || profile.automixEngine == null
+                ? "" : profile.automixEngine);
+        o.add("member", sourcesJson(profile == null ? null : profile.memberSources));
+        o.add("resolvable", sourcesJson(profile == null ? null : profile.resolvableSources));
+        o.add("viaLx", sourcesJson(profile == null ? null : profile.viaLxSources));
         // 「正在听的音乐名」：在房间里时它通常就是房间当前曲目，但个人暂停或还没开起来时
         // 会不一样，所以照客户端自己报的来。
         o.addProperty("nowPlaying", profile == null ? "" : profile.listeningLabel());
         return o;
+    }
+
+    private static JsonArray sourcesJson(Collection<String> set) {
+        JsonArray a = new JsonArray();
+        if (set != null) for (String s : set) a.add(s);
+        return a;
     }
 }

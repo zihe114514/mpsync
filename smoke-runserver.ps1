@@ -42,6 +42,10 @@ $jdkOf = [ordered]@{
     '1.21.1forge'     = $JDK21
     '1.21.11forge'    = $JDK21
     '26.2forge'       = $JDK25
+    # 26.3 家族同样跑在 JDK 25 上（version json 的 javaVersion.majorVersion=25）。
+    '26.3fabric'      = $JDK25
+    '26.3neoforge'    = $JDK25
+    '26.3forge'       = $JDK25
 }
 
 if ($Modules.Count -eq 0) { $Modules = @($jdkOf.Keys) }
