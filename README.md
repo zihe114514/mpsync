@@ -9,8 +9,10 @@
 反过来，非会员解析出的试听片段会被服务端按「链接实际时长 < 歌曲时长」拒绝。
 
 播放源**不限平台**：服务端既不解析也不取流，平台对它没有技术意义，客户端支持哪个平台，
-房间就能放哪个平台（`netease` / `qq` / `kugou` / `gd` 已在协议里留了常量，但不限于它们）。
-服主想收窄就填 `allowedSources`。
+房间就能放哪个平台。协议层维护的已知令牌参考为 `netease`、`qq`、`kugou`、`gd`、
+`bilibili`、`youtube`、`kuwo`、`migu`、`qianqian`、`soda`、`fivesing`、`jamendo`、
+`joox`、`apple`、`customapi`（见 `Proto.KNOWN_SOURCES`），但不限于它们。服主想收窄就填
+`allowedSources`；默认留空仍是不限制。
 
 ## 目录结构
 
@@ -23,11 +25,11 @@ paper-common/      Bukkit 适配层（所有 Paper 版本共用）
 forge-common/      Forge 适配层
 neoforge-common/   NeoForge 适配层
 
-<版本><加载器>/    16 个构建工程，版本 × 加载器的笛卡尔积：
-                   1.20.1 / 1.21.1 / 1.21.11 / 26.2
+<版本><加载器>/    20 个构建工程，版本 × 加载器的笛卡尔积：
+                   1.20.1 / 1.21.1 / 1.21.11 / 26.2 / 26.3
                    × fabric / paper / forge / neoforge
 
-build-all.ps1         构建驱动：仓库自检 -> core 单元测试 -> 16 个模块，产物统一汇总
+build-all.ps1         构建驱动：仓库自检 -> core 单元测试 -> 20 个模块，产物统一汇总
 check-repo.ps1        仓库自检：模块矩阵 / 配置口径 / core 平台无关性 / 脚本编码，不联网、秒级
 resolve-jdk-hosts.ps1 用 DoH 生成一份 JDK 专用 hosts，绕开 ForgeGradle 7 那个 5 秒硬超时
                       （由 build-all.ps1 自动调用，见下文「ForgeGradle 7 与 5 秒硬超时」）
@@ -36,7 +38,7 @@ mirror-server.ps1     本地 maven 镜像兜底（目前没有任何工程指向
 .github/workflows/    CI：只跑 core-test 与 core 的平台 import 静态检查
 ```
 
-16 个工程各自独立（各有 gradlew），通过 build.gradle 里的
+20 个工程各自独立（各有 gradlew），通过 build.gradle 里的
 
 ```gradle
 sourceSets.main.java.srcDirs += ['../core/src/main/java', '../fabric-common/src/main/java']
@@ -45,7 +47,7 @@ sourceSets.main.java.srcDirs += ['../core/src/main/java', '../fabric-common/src/
 共用同一份源码，因此房间逻辑只有一份实现，平台差异只留在
 `MpNet` / `MpPayloads` / `*Platform` / `*Commands` 这几个薄适配文件里。
 
-## 架构：为什么一份 core 能跨四个游戏版本
+## 架构：为什么一份 core 能跨五个游戏版本
 
 跨版本共用代码通常不靠谱，因为 Minecraft 的 API 每个版本都在改名改签名（Yarn 名与 26.x 的
 官方名还不通用）。这里成立的原因很具体：**core 一行 Minecraft 都不碰。**
@@ -77,7 +79,7 @@ core 的全部 import 只有四类：`com.google.gson`、`java.*`、`javax.*`、
 ## 构建
 
 ```powershell
-# 全量：仓库自检 + core 单元测试打头，然后 16 个模块，产物汇总到 F:\donked\构建产物\服务端mod-mpsync
+# 全量：仓库自检 + core 单元测试打头，然后 20 个模块，产物汇总到 F:\donked\构建产物\服务端mod-mpsync
 powershell -ExecutionPolicy Bypass -File .\build-all.ps1
 
 # 只跑 core 单元测试（几秒）
@@ -104,6 +106,7 @@ powershell -ExecutionPolicy Bypass -File .\check-repo.ps1
 | 1.21.1 / 1.21.11 fabric | 25 | loom 1.17-SNAPSHOT 要新 JVM，编译目标仍是 release 21 |
 | 1.21.1 / 1.21.11 的 paper / forge / neoforge | 21 | release 21；ForgeGradle 6（1.21.1forge）只跟到 21 |
 | 26.2 四个 | 25 | release 25，必须真有一个 JDK 25 |
+| 26.3 四个 | 25 | 同上：26.3 的 version json 里 javaVersion.majorVersion 仍是 25 |
 
 仓库注意事项（本机实测）：
 
@@ -123,7 +126,7 @@ forge 四个模块**不是同一套构建插件**，这条闸由 `check-repo.ps1
 | 模块 | ForgeGradle | Gradle |
 | --- | --- | --- |
 | 1.20.1forge / 1.21.1forge | 6.0.x | 8.x |
-| 1.21.11forge / 26.2forge | 7.0.x | 9.6.1 |
+| 1.21.11forge / 26.2forge / 26.3forge | 7.0.x | 9.6.1 |
 
 1.21.11forge 原先也钉着 FG6，构建固定死在
 `java.util.zip.ZipException: duplicate entry: mcp/client/Start.class`：FG6 会把 mcp_config 的
@@ -151,11 +154,11 @@ hosts 列表缺哪个主机就会 UnknownHost，加新仓库时记得同步那�
 ### 仓库自检
 
 `build-all.ps1` 在动 Gradle 之前先跑 `check-repo.ps1`（不通过就中止，确实要跳过用 `-SkipChecks`）。
-它守的是这类「能构建成功、但发出去的十六个 jar 不是一套」的问题：
+它守的是这类「能构建成功、但发出去的二十个 jar 不是一套」的问题：
 
 * 模块矩阵就是 4 个版本 x 4 个平台，多一个少一个都报（`build-all.ps1` 不会构建没登记的目录）；
 * `minecraft_version` 必须与目录名一致，`archives_base_name` 必须是 `mpsync-<mc>-<loader>`
-  —— 十六个 jar 平铺在一个目录里，产物名是发版时唯一的辨识依据；
+  —— 二十个 jar 平铺在一个目录里，产物名是发版时唯一的辨识依据；
 * 版本号必须全仓一致（fabric/forge/neoforge 叫 `mod_version`，paper 叫 `plugin_version`，
   名字随平台模板，值不许漂）；
 * `mod_id` 一律 `mpsync`；
@@ -169,12 +172,12 @@ hosts 列表缺哪个主机就会 UnknownHost，加新仓库时记得同步那�
 * 根目录 `.ps1` 必须带 UTF-8 BOM，`gradlew` 在 git 索引里必须是 `100755`。
 
 CI（`.github/workflows/core-test.yml`）只做两件对应的事：同一条 core 平台 import 静态检查，
-以及 `core-test` 的 44 个单元测试。**故意不在 CI 上构建那十六个模块** —— 要下 Minecraft 客户端 jar、
+以及 `core-test` 的 44 个单元测试。**故意不在 CI 上构建那二十个模块** —— 要下 Minecraft 客户端 jar、
 MCP/NeoForm 映射和各家 MDK，既慢又脆，而它们编进去的 core 本来就是同一份源码。
 
 ### 发版纪律：改完 core 必须全量重建
 
-core 是被 `srcDirs` **按值拷进**每个 jar 的，16 个模块之间没有任何 Gradle 依赖关系。
+core 是被 `srcDirs` **按值拷进**每个 jar 的，20 个模块之间没有任何 Gradle 依赖关系。
 只重建一部分模块，剩下那些 jar 里就还是旧 core，而它们会在同一个房间里通信——这种
 「新旧混跑」实测发生过，且不会有任何报错。`build-all.ps1` 结束时会拿共用源码的最后修改时间
 和产物目录里每个 jar 的时间比一遍，比源码旧的会被列出来并以退出码 2 提示。
@@ -187,7 +190,7 @@ powershell -ExecutionPolicy Bypass -File .\smoke-runserver.ps1 -Modules 1.21.1fa
 
 起一次 `runServer`，盯日志里的 `MusicParty ready` / `Done (`。单元测试证明不了
 「这个 jar 能被这个版本的加载器装上」——通道注册、事件挂点、`mods.toml` / `fabric.mod.json`
-只有真的起一次服务器才会暴露。paper 那四个是普通 java 工程，没有 `runServer`。
+只有真的起一次服务器才会暴露。paper 那几个是普通 java 工程，没有 `runServer`。
 
 ## 仓库约定：编码、换行、权限位
 
@@ -234,8 +237,8 @@ JDK 映射表点一遍。
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `allowedSources` | `[]` | 留空 = 不限平台。填了就只放这些 |
-| `allowedHosts` | `[]` | 留空 = 只做公网校验（仍会挡回环／私网／链路本地） |
+| `allowedSources` | `[]` | 留空 = 不限平台。填了就只放这些；已知令牌见 `Proto.KNOWN_SOURCES` |
+| `allowedHosts` | `[]` | 留空 = 只做公网校验；收窄可参考 `SourceGuard.DEFAULT_HOSTS`（含 Bilibili / YouTube CDN） |
 | `minStreamDurationRatio` | 0.8 | 链接实际时长低于歌曲时长这个比例即判为试听片段 |
 | `urlWaitTimeoutMs` | 20000 | 等别人重新解析链接的上限。含一次跨机器往返，下限兜 12 秒 |
 | `clockGraceMs` | 4000 | 命令帧之后的时钟静默窗 |
@@ -270,15 +273,16 @@ JDK 映射表点一遍。
 | 客户端 | 位置 | 接入方式 |
 | --- | --- | --- |
 | Melodify / modernMP | `F:\donked\modernMP-master` | `music/party/`：完整房间界面、一起听歌单、桌面/全屏歌词、播放器控制栏全部接房间 |
-| MuoniumPlayer | `C:\MUSIC`（1.20.1 recode / 1.21.1 / 1.21.11 recode / 26.2） | `mpparty-common/` 共用源码 + 各工程 `party/net/MpNet.java` |
+| MuoniumPlayer | `C:\MUSIC`（1.20.1 recode / 1.21.1 / 1.21.11 recode / 26.2 / 26.3） | `mpparty-common/` 共用源码 + 各工程 `party/net/MpNet.java` |
 
-MuoniumPlayer 侧的接入要点（与四个 MC 版本共用同一份源码）：
+MuoniumPlayer 侧的接入要点（与五个 MC 版本共用同一份源码）：
 
 * `mpparty-common/src/main/java/com/muoniumplayer/party/` —— 协议（`MpProto`）、房间状态
   （`MpRoom` / `MpMember` / `MpTrack`）、客户端引擎（`MpPartyClient`）、播放桥接（`MpPlayback`）、
   对时策略（`MpSyncPolicy`）、平台查询与分享链接解析；
 * 各工程 `src/main/java/com/muoniumplayer/party/net/` —— 版本相关的通道注册
-  （1.20.1 裸 `PacketByteBuf`；1.21.1 / 1.21.11 的 `CustomPayload`；26.2 的官方名 `CustomPacketPayload`）；
+  （1.20.1 裸 `PacketByteBuf`；1.21.1 / 1.21.11 的 `CustomPayload`；
+  26.2 与 26.3 的官方名 `CustomPacketPayload`）；
 * 播放不另开通路：`MpPlayback` 复用既有播放链路，房间下发的链接注入取流环节，因此下载、
   容器识别、AAC 转码、封面、歌词、灵动岛全部照常工作；
 * 进房后本地传输控制被接管：起播/「下一首播放」改成点歌，房主与管理员的
@@ -289,6 +293,13 @@ MuoniumPlayer 侧的接入要点（与四个 MC 版本共用同一份源码）�
 * **16 个模块已在本机全部构建通过（2026-08-31），产物齐全且都比当前 core 源码新。**
   遗留前提是：`1.21.11forge` / `26.2forge` 依赖 `resolve-jdk-hosts.ps1` 生成的 JDK hosts
   才能跑完（原因见上文），换到一个不用 fake-ip 代理的网络环境时这一步可以省掉。
+* **26.3 那四个模块也已在本机构建通过（2026-09-25）**：`mpsync-26.3-{fabric,forge,neoforge}-1.2.0.jar`
+  与 `mpsync-26.3-paper-1.2.0.jar`。两点与其余模块不同，改动时留意：
+  `26.3neoforge` 用的是 **ModDevGradle 2.0.147**（本仓唯一不用 2.0.144 的模块 —— 2.0.144 在
+  recompile 原版 `net/minecraft/core/HolderSet.java` 时就会失败，见上游 `neoforged/NeoForge#3518`）；
+  `26.3forge` 的 Forge 只有 `66.0.3`，mavenizer 取 `forge-26.3-66.0.3-universal.jar` 时
+  本机 TLS 会随机超时，**重试即可**（它的缓存会续跑，别清）。
+  这四个模块是从 `26.2*` 整份复制的，所以下面那条「适配层重复」对它们同样成立。
 * **没有做过游戏内实机联调**（同一个房间里 Melodify + MuoniumPlayer 同时在听）。
 * **适配层还有该收没收的重复：** `1.21.1fabric` 与 `1.21.11fabric` 的 `MpNet` 完全相同；
   `1.21.1neoforge` / `1.21.11neoforge` / `26.2neoforge` 三份 `MpNet` 完全相同；

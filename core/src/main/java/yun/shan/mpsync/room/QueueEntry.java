@@ -17,6 +17,15 @@ public final class QueueEntry {
     public final String requesterName;
     public final long addedAt = System.currentTimeMillis();
 
+    /**
+     * 房主算出的交接计划：这一首放完时怎么交给下一首。
+     *
+     * <p>刻意可变：计划由房主在曲目<b>已经开播之后</b>上报（要先拿到下一首的音频才能分析），
+     * 到达时刻不固定。{@code null} 表示还没有计划，换歌退回配置里的默认提前量 —— 这也是
+     * 「老客户端 + 新服务端」以及「房主那台算不出」两种情况的共同退路。</p>
+     */
+    public volatile JsonObject automixPlan;
+
     public QueueEntry(Track track, UUID requester, String requesterName) {
         this.track = track;
         this.requester = requester;

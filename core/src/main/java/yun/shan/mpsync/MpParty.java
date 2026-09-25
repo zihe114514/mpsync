@@ -40,6 +40,19 @@ public final class MpParty {
         config = MpConfig.load(configFile);
         manager = new RoomManager(config);
         Net.bind(p);
+        // 封禁名单跟配置放同一个目录；代解析线程池也在这里装好（没配 Token 时它什么都不做）。
+        // 必须在 Net.bind 之后：装配时会把「回到主线程」的钩子交给它。
+        manager.bootstrap(banFile(configFile), p);
+    }
+
+    /** {@code mpsync.json} 旁边的 {@code mpsync-bans.json}。 */
+    private static Path banFile(Path configFile) {
+        try {
+            return configFile == null ? Path.of("mpsync-bans.json")
+                    : configFile.resolveSibling("mpsync-bans.json");
+        } catch (Throwable ignored) {
+            return Path.of("mpsync-bans.json");
+        }
     }
 
     /**

@@ -1,7 +1,7 @@
 ﻿<#
     仓库一致性自检 —— 不构建、不联网、不碰 Gradle，秒级跑完。
 
-    为什么需要它：这个仓有 16 个**互相独立**的 Gradle 构建（每个模块自带 settings.gradle
+    为什么需要它：这个仓有 20 个**互相独立**的 Gradle 构建（每个模块自带 settings.gradle
     和 wrapper），没有根工程能替它们统一口径。于是「统一配置」这件事在这里不是靠
     继承实现的，而是靠约定 + 这个脚本兜着：任何一处漂了（版本号、产物名、minecraft_version
     与目录名对不上、又被云端构建机塞进绝对路径、core 里被写进一行 net.minecraft.*），
@@ -23,7 +23,7 @@ function Add-Problem([string] $msg) { [void] $problems.Add($msg) }
 function Say([string] $msg) { if (-not $Quiet) { Write-Host $msg } }
 
 # 期望的模块矩阵：4 个游戏版本 x 4 个平台。多一个少一个都要人过一眼。
-$mcVersions = @('1.20.1', '1.21.1', '1.21.11', '26.2')
+$mcVersions = @('1.20.1', '1.21.1', '1.21.11', '26.2', '26.3')
 $loaders    = @('fabric', 'forge', 'neoforge', 'paper')
 $expected   = foreach ($mc in $mcVersions) { foreach ($ld in $loaders) { "$mc$ld" } }
 

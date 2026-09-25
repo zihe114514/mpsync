@@ -63,6 +63,22 @@ public final class SourceGuard {
     );
 
     /**
+     * 哔哩哔哩音频与封面 CDN。音频直链由 {@code playurl} 动态返回，实测 host 在
+     * {@code *.bilivideo.com}（另保留 {@code .cn} 备用域）；封面是 {@code *.hdslb.com}。
+     */
+    public static final List<String> BILIBILI_HOSTS = List.of(
+            "bilivideo.com",
+            "bilivideo.cn",
+            "hdslb.com"
+    );
+
+    /** YouTube 音频直链在 {@code *.googlevideo.com}，封面在 {@code *.ytimg.com}。 */
+    public static final List<String> YOUTUBE_HOSTS = List.of(
+            "googlevideo.com",
+            "ytimg.com"
+    );
+
+    /**
      * 常见平台 CDN 后缀的并集。<b>不再是默认值</b>（默认是「不限制，只要是公网地址」），
      * 保留它有两个用途：给服主一份想收窄时可以直接抄的参考，以及识别旧版写出来的
      * 「仅网易云」配置。
@@ -75,6 +91,8 @@ public final class SourceGuard {
         all.addAll(QQ_HOSTS);
         all.addAll(KUGOU_HOSTS);
         all.addAll(GD_HOSTS);
+        all.addAll(BILIBILI_HOSTS);
+        all.addAll(YOUTUBE_HOSTS);
         return List.copyOf(all);
     }
 

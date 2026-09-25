@@ -59,6 +59,37 @@ class HelloContractTest {
     }
 
     @Test
+    void helloAnnouncesTheRoomAutomixLead() {
+        // 房间内无缝交接的提前量。服务端在曲末前这么多毫秒换歌，客户端据此提前下载下一首并
+        // 交叠；老服务端不发这个字段，客户端必须按 0 处理，退化成硬切。
+        // 少了它，客户端会退回自带默认值 —— 那正是「同一房间里不同客户端口径不一致」的来源。
+        JsonObject hello = sayHello();
+        assertTrue(hello.has("automixLeadMs"), "交叠提前量必须下发，否则客户端只能猜");
+        assertEquals(MpParty.config().automixLeadMs, hello.get("automixLeadMs").getAsLong());
+        assertEquals(4000L, MpParty.config().automixLeadMs,
+                "默认必须开着：关着的话客户端那半连下一首的链接都拿不到，房间永远无缝不起来");
+        assertTrue(hello.get("automixLeadMs").getAsLong() > 0L, "下发的必须是个真能用的提前量");
+    }
+
+    /**
+     * 分析者指派的两个参数也必须下发。
+     *
+     * <p>客户端拿它们只是为了「知道自己该等多久」以及显示「谁在算」。缺了不会算错，但把
+     * 「借用别人的电脑」这件事变成不可解释的黑盒 —— 界面无法说明为什么这首曲子还没开始交叠。</p>
+     */
+    @Test
+    void helloAnnouncesTheAnalyzerAssignmentPolicy() {
+        JsonObject hello = sayHello();
+        assertTrue(hello.has("automixAssignTimeoutMs"),
+                "被指派人多久不交卷就改派，客户端要据此决定要不要继续等");
+        assertEquals(MpParty.config().automixAssignTimeoutMs,
+                hello.get("automixAssignTimeoutMs").getAsLong());
+        assertTrue(hello.get("automixAssignTimeoutMs").getAsLong() > 0L,
+                "出厂默认是个正数超时；0 在协议里表示「取消超时 / 不设期限」，不该是默认值");
+        assertTrue(hello.has("automixAnnounceAnalyst"));
+    }
+
+    @Test
     void helloKeepsTheOlderFieldsClientsAlreadyRelyOn() {
         JsonObject hello = sayHello();
         assertEquals(Proto.VERSION, hello.get("proto").getAsInt());

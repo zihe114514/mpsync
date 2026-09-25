@@ -63,6 +63,16 @@ class TrackTest {
     }
 
     @Test
+    void bilibiliAndYouTubeCanBeSelectedForASourceWhitelist() {
+        MpConfig cfg = new MpConfig();
+        cfg.allowedSources = new ArrayList<>(List.of("bilibili", "youtube"));
+        assertEquals("bilibili", Track.fromJson(track("bilibili", "BV1xx411c7mD|42", 200_000L), cfg).source);
+        assertEquals("youtube", Track.fromJson(track("youtube", "dQw4w9WgXcQ", 212_000L), cfg).source);
+        assertThrows(IllegalArgumentException.class,
+                () -> Track.fromJson(track("kugou", "abc", 200_000L), cfg));
+    }
+
+    @Test
     void badSongIdIsRejected() {
         MpConfig cfg = new MpConfig();
         assertThrows(IllegalArgumentException.class, () -> Track.fromJson(track("netease", "", 1000L), cfg));
