@@ -487,6 +487,12 @@ public final class RoomManager {
                     hello.addProperty("channelCode", CHANNEL_CODE);
                     hello.addProperty("channelMaxPerMember", cfg.channelMaxPerMember);
                     hello.addProperty("publicRoomsEnabled", cfg.publicRoomsEnabled);
+                    // 「播放歌单」这一档能力。客户端靠 playlistBatchLimit>0 判断这台服务端认不认识
+                    // enqueue_batch —— 老服务端不发这个字段，客户端取到 0，那颗按钮就不出现，
+                    // 不会出现「点了之后服务端一句 error 把整张单退回聊天栏」的界面。
+                    // playlistAdminOnly 只影响按钮的 enabled 条件，不影响它显不显示。
+                    hello.addProperty("playlistBatchLimit", cfg.playlistBatchLimit);
+                    hello.addProperty("playlistAdminOnly", cfg.playlistAdminOnly);
                     hello.addProperty("voteWindowMs", cfg.voteWindowMs);
                     hello.addProperty("voteSkipRatio", cfg.voteSkipRatio);
                     hello.addProperty("voteKickRatio", cfg.voteKickRatio);
@@ -579,7 +585,24 @@ public final class RoomManager {
                 QueueEntry entry = room.enqueue(uuid, who, track, Proto.bool(msg, "next", false));
                 // 插队与点歌在队列里落的位置不同，全房看到的这句也得不同：只写「点歌」的话，
                 // 别人只看到有人点了一首、自己的排队却被挤后，像是服务端排序坏了。
-                room.notice(who + (entry.jumped ? " 插了一首：" : " 点歌：") + entry.track.display());
+                room.notice(who + (entry.jumped() ? " 插了一首：" : " 点歌：") + entry.track.display());
+            }
+            case Proto.C_ENQUEUE_BATCH -> {
+                String banned = banReason(uuid);
+                if (banned != null) { Net.error(uuid, banned); return; }
+                // 频道里不给灌单：全服共用的房间，一个人倒进 100 首就把所有人的排队挡在后面了，
+                // 而那里本来就已经有「人均 3 首」这一档在管着逐首点歌。关掉它比放宽它更好解释。
+                if (room.channel()) { Net.error(uuid, "服务器频道不支持播放整张歌单，请一首一首点"); return; }
+                if (cfg.playlistBatchLimit <= 0) { Net.error(uuid, "服务器未开启播放歌单功能"); return; }
+                if (cfg.playlistAdminOnly && !control) {
+                    Net.error(uuid, "本房间只有房主与管理员能播放整张歌单");
+                    return;
+                }
+                if (!control && !cfg.membersCanEnqueue) { Net.error(uuid, "本房间未开放点歌"); return; }
+                String label = Proto.str(msg, "playlist", "");
+                Room.BatchResult result = room.enqueueBatch(uuid, Net.nameOf(uuid), label,
+                        Proto.arr(msg, "tracks"));
+                room.notice(Net.nameOf(uuid) + " " + result.describe());
             }
             case Proto.C_PLAY_NOW -> {
                 if (requireControl(uuid, control)) return;
@@ -608,6 +631,14 @@ public final class RoomManager {
             case Proto.C_CLEAR -> {
                 if (requireControl(uuid, control)) return;
                 room.clearQueue();
+            }
+            case Proto.C_CLEAR_PLAYLIST -> {
+                // 撤的是「某张歌单还没播的那批」，不是整条队列，所以普通成员也能用 —— 前提是他撤的
+                // 正是自己灌进来的那批，这一点由 Room#removePlaylist 按 requester 再校验一次。
+                String name = Proto.str(msg, "playlist", "");
+                int removed = room.removePlaylist(uuid, name);
+                if (removed <= 0) Net.error(uuid, "队列里没有《" + (name.isEmpty() ? "这张" : name) + "》待播的歌了");
+                else room.notice(Net.nameOf(uuid) + " 撤回了歌单《" + name + "》剩下的 " + removed + " 首");
             }
             case Proto.C_PAUSE -> {
                 if (requireControl(uuid, control)) return;

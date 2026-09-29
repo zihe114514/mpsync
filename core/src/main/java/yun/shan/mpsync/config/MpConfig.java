@@ -113,6 +113,35 @@ public final class MpConfig {
     /** Let a requester delete their own pending entry. */
     public boolean requesterCanRemoveOwn = true;
     /**
+     * 一次「播放歌单」最多排入多少首（0 = 关掉了灌单这个功能）。
+     *
+     * <p>它和 {@link #maxQueueSize} 是两层不同的闸：后者是房间总队列的长度，一张长单子当然不能
+     * 把房间占满；这一档管的是「一次投放能倒进去多少」。默认 100 首 ≈ 一张正常歌单的规模，
+     * 又明显少于 200 的总上限，留一半位置给别人点歌。</p>
+     *
+     * <p>{@code 0} = 关掉这个功能（分派那一层直接回一句「服务器未开启播放歌单功能」，客户端
+     * 也据此不显示那颗按钮）。</p>
+     */
+    public int playlistBatchLimit = 100;
+    /**
+     * 灌歌单是不是只有房主/管理员能做。
+     *
+     * <p>默认 true。理由和 {@code next} 插队位只发给管理者是同一条：一首一首点的时候，
+     * 人均上限 {@link #maxQueuePerMember} 自然把每个人压在几首，而灌单一次就是几十上百首 ——
+     * 对所有成员开放的话，第一个进来的人能把整间房间的歌单变成他一个人的播放列表，
+     * 别人手里那颗「点歌」按钮名义上还在、实际上永远排在几百首后面。服主想开就关。</p>
+     */
+    public boolean playlistAdminOnly = true;
+    /**
+     * 前瞻窗：轮到播放之前，服务端提前给几首要播放链接。
+     *
+     * <p>默认 2，也就是「下一首 + 再下一首」。这直接决定灌单能不能把房间打爆：一次 {@code url_needed}
+     * 会向房间里每个可能答得上的成员单播一次，收到的人在本机真跑一次取流。整张歌单一次性问完，
+     * 等于拿点歌人的账号和上行按着一百首猛抽一遍，而大部分曲子要几十分钟后才轮到，那时链接早过期了。
+     * 设成 1 就退回「只备下一首」（改造前单首点歌时代的实际行为），设得更大只是更激进地预取。</p>
+     */
+    public int queueResolveLead = 2;
+    /**
      * Minimum served-audio length, as a fraction of the track length, for a stream URL to
      * be accepted. Guards against a non-VIP client resolving a 30s trial clip and having
      * the whole room play that. Set to 0 to disable the check.
@@ -301,6 +330,15 @@ public final class MpConfig {
                 cfg.voteKickCooldownMs = Math.max(60 * 60 * 1000L, cfg.voteWindowMs * 2L);
             }
             if (cfg.voteMinMembers < 2) cfg.voteMinMembers = 2;
+            // 灌单这一组。单次上限不能超过房间总上限，否则「队列已满」那一句就成了空话；
+            // 负数是手滑，按 0（关掉功能）处理，而不是按「不限」处理 —— 不限恰好是最糟的默认值。
+            if (cfg.playlistBatchLimit < 0) cfg.playlistBatchLimit = 0;
+            if (cfg.maxQueueSize > 0 && cfg.playlistBatchLimit > cfg.maxQueueSize) {
+                cfg.playlistBatchLimit = cfg.maxQueueSize;
+            }
+            // 前瞻窗至少 1 首，不然轮到那一首才开始问，每次交接都要空等一个 urlWaitTimeoutMs。
+            if (cfg.queueResolveLead < 1) cfg.queueResolveLead = 1;
+            if (cfg.queueResolveLead > 10) cfg.queueResolveLead = 10;
             if (cfg.serverTokens == null) cfg.serverTokens = new LinkedHashMap<>();
             if (cfg.resolverEndpoints == null) cfg.resolverEndpoints = new LinkedHashMap<>();
             if (cfg.serverResolveTimeoutMs < 3_000L) cfg.serverResolveTimeoutMs = 3_000L;

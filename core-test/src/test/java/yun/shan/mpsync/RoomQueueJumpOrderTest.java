@@ -33,8 +33,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       正常排队的歌之前。</li>
  * </ul>
  *
- * <p>{@code jumped} 只在服务端内部用来认那一段，刻意不上歌单快照 —— 排序问题不该变成一个
- * wire 字段、更不该让老客户端因为多出来的键而变样。</p>
+ * <p>档位（{@code QueueEntry.tier}，插队/点歌/歌单三档）只在服务端内部用来算插入点，刻意不上歌单
+ * 快照 —— 排序问题不该变成一个 wire 字段、更不该让老客户端因为多出来的键而变样。歌单名倒是上协议的
+ * （{@code playlist}），因为界面要能回答「后面这几十首是某人灌的单子，不是你们排的队」。</p>
  */
 class RoomQueueJumpOrderTest {
 
@@ -103,7 +104,7 @@ class RoomQueueJumpOrderTest {
         room.enqueue(member, "成员", playable("q1"), false);
         QueueEntry jumped = room.enqueue(member, "成员", playable("mine"), true);
 
-        assertFalse(jumped.jumped, "没有管理权的人带 next 也不该插队");
+        assertFalse(jumped.jumped(), "没有管理权的人带 next 也不该插队");
         assertEquals(List.of("q1", "mine"), queued(), "成员发 next 只会落到队尾");
     }
 
@@ -125,7 +126,7 @@ class RoomQueueJumpOrderTest {
         room.removeEntry(j2.entryId);
         room.removeEntry(j3.entryId);
         QueueEntry j4 = room.enqueue(owner, "房主", playable("j4"), true);
-        assertTrue(j4.jumped);
+        assertTrue(j4.jumped());
         assertEquals(List.of("j4", "q1"), queued());
     }
 
@@ -133,7 +134,7 @@ class RoomQueueJumpOrderTest {
     void jumpMarkerStaysOffTheWire() {
         room.enqueue(owner, "房主", playable("start"), false);
         QueueEntry jumped = room.enqueue(owner, "房主", playable("j1"), true);
-        assertTrue(jumped.jumped, "管理者的 next 要记下来，插入点靠它算");
+        assertTrue(jumped.jumped(), "管理者的 next 要记下来，插入点靠它算");
 
         JsonObject snapshot = jumped.toJson(true);
         assertFalse(snapshot.has("jumped"),

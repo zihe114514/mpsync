@@ -113,6 +113,29 @@ public final class Proto {
     public static final String C_LEAVE       = "leave";
     public static final String C_DISBAND     = "disband";
     public static final String C_ENQUEUE     = "enqueue";      // member 点歌
+    /**
+     * 整张歌单灌进队列，全部落最低优先级档（排在插队与排队歌之后）。
+     *
+     * <p>负载：{@code playlist}（歌单名，可空）+ {@code tracks}（曲目对象数组，形状同
+     * {@code enqueue} 的 {@code track}，但<b>不带</b> {@code url} —— 链接由服务端按前瞻窗
+     * 逐首向房间要，见 {@code Room#resolveLookahead}）。</p>
+     *
+     * <p>为什么不复用 {@code enqueue} 发 N 帧：每一帧入队都会广播一次<b>整份</b>歌单，还会给裸进去
+     * 的曲目的地发一次 {@code url_needed}。一次点歌无所谓，一次灌一百首就是 N×N 的流量加上一轮
+     * 集中取流。追加式改动，{@code VERSION} 不动：老客户端不发这一帧，功能对它就是不存在。</p>
+     */
+    public static final String C_ENQUEUE_BATCH = "enqueue_batch";
+    /**
+     * 把某张歌单<b>还没播的</b>那批撤回队列（{@code playlist} = 当初灌进来时带的名字）。
+     *
+     * <p>这一帧是 {@code enqueue_batch} 的退路，没有它灌单就成了陷阱：一张 100 首的单子倒进去之后，
+     * 想收回来只有两个选择 —— 一首一首点「移除」（一百次全量广播），或者点「清空歌单」把<b>别人</b>
+     * 排的歌一起清掉。两个都不是用户按那颗按钮时想做的事。</p>
+     *
+     * <p>权限沿用逐首删除的那一套：管理权可以撤任何人的批次，普通成员只能撤自己灌进来的那批
+     * （按 {@code requester} 再校验一次，不能靠报一个别人的歌单名把对方的队列拆了）。</p>
+     */
+    public static final String C_CLEAR_PLAYLIST = "clear_playlist";
     public static final String C_PLAY_NOW    = "play_now";     // owner/admin: play this track immediately
     public static final String C_PLAY_INDEX  = "play_index";   // owner/admin: jump to queue index
     public static final String C_REMOVE      = "remove";

@@ -60,6 +60,21 @@ public final class Room {
      * 又比一首歌的剩余部分短得多 —— 两头都顾得住。</p>
      */
     private static final long CLOCK_QUIET_MAX_MS = 30_000L;
+    /**
+     * 一条 {@code enqueue_batch} 帧最多带几首。
+     *
+     * <p>客户端本来就按 {@code MpPartyClient#BATCH_CHUNK} 分批发，这一档只是挡住「一次把一千首
+     * 塞进一个 JSON 数组」那种写法：单帧上限 512KB 装得下，但服务端逐条 {@link Track#fromJson}
+     * 加上一次全量广播会明显卡顿，而房间里其他人正在等这一帧之后的心跳。</p>
+     */
+    private static final int MAX_BATCH_FRAME = 200;
+    /**
+     * 同一首曲子两次被问「谁有这条链接」之间的最短间隔。
+     *
+     * <p>前瞻窗每次队列变动、每次换歌都会跑一遍，而一张没人答得上的会员曲可以一直在队里挂着。
+     * 没有这一档就是每秒向全房问一遍同一首歌。</p>
+     */
+    private static final long RESOLVE_ASK_COOLDOWN_MS = 30_000L;
 
     public final String id;
     public final String code;
@@ -121,6 +136,17 @@ public final class Room {
      * 要把这个窗按实际交叠长度再拉长一截，详见 {@link #markCommand(long)}。</p>
      */
     private long clockQuietUntil;
+
+    /**
+     * 每条曲目上一次被前瞻窗问到链接的时刻（键是 {@code source:songId}）。
+     *
+     * <p>见 {@link #resolveLookahead()}：那里靠 {@code hasFreshUrl()} 判「这条要不要问」，而答不上来
+     * 的曲子（房间里没人有会员）永远不 fresh，于是每次队列变动都会被再问一遍。这一格就是那层的节流。
+     * 只增不减会跟着房间寿命长，所以条目离队时在 {@link #dropResolvedKeys} 里顺手收掉。</p>
+     */
+    private final Map<String, Long> resolveAskedAt = new java.util.HashMap<>();
+    /** 前瞻窗在 tick 里的低频计时器，见 {@link #tick()}。 */
+    private int lookaheadCounter;
 
     /**
      * 当前被指派去算交接计划的那一台客户端；{@code null} = 这一首没有指派（没人能算，
@@ -354,7 +380,7 @@ public final class Room {
      *
      * @param playNext 插到队首那段插队位的末尾，而不是排队尾。只对房主/管理员生效 ——
      *                 让任何成员都能插队的话，「下一曲播放」这颗按钮就成了插到所有人前面的后门。
-     *                 连续插队之间按插入顺序播（见 {@link #jumpInsertAt}），不是倒序。
+     *                 连续插队之间按插入顺序播（见 {@link #insertAt}），不是倒序。
      * @throws IllegalStateException with a user-facing reason when the queue rejects it
      */
     public QueueEntry enqueue(UUID uuid, String name, Track track, boolean playNext) {
@@ -370,12 +396,8 @@ public final class Room {
             if (e.track.key().equals(track.key())) throw new IllegalStateException("这首歌已经在队列里了");
         }
         QueueEntry entry = new QueueEntry(track, uuid, name);
-        if (playNext && controls(uuid)) {
-            entry.jumped = true;
-            queue.add(jumpInsertAt(), entry);
-        } else {
-            queue.add(entry);
-        }
+        entry.tier = playNext && controls(uuid) ? QueueEntry.TIER_JUMP : QueueEntry.TIER_REQUEST;
+        queue.add(insertAt(entry.tier), entry);
         if (current == null) {
             startEntry(pollFront(entry), 0L);
         } else {
@@ -396,15 +418,161 @@ public final class Room {
     }
 
     /**
-     * 插队应该落在哪个下标：队首那段「已经插过的」之后、第一首正常排队的之前。
+     * 整张歌单灌进队列：全部落在<b>第三档</b>，排在所有插队与排队歌之后。
      *
-     * <p>直接用 {@code queue.add(0, ...)} 的话，房主连点三首「下一首播放」听到的是<b>倒序</b> ——
-     * 最后插的那最先播，而他明明是按 1、2、3 点的。数一下队首连续的 {@code jumped} 段当插入点，
-     * 插队之间就变成先到先得，同时整段仍然压在所有正常排队的歌前面。</p>
+     * <p><b>为什么是一条批量帧而不是 N 条 {@link #enqueue}。</b>逐首走点歌那条路的话，100 首就是
+     * 100 次 {@code broadcastQueue()} —— 而每一帧广播都带<b>整份</b>歌单，等于往全房发了上万条曲目；
+     * 更要命的是每首裸歌入队都会当场 {@code requestUrl} 一次，于是 100 首要向房间里问 100 轮解析，
+     * 客户端那一侧就是 100 次真取流。一首一首点时这些开销无所谓，因为一次只点一首；灌单必须换个形状。</p>
+     *
+     * <p><b>绝不打断正在播的那一首。</b>这里面没有 {@code playNow}：只有在<b>房间本来就没歌在放</b>
+     * 的时候才起播这一批的第一首，那不算打断，那是「终于有歌可放了」。正在放的歌继续按它自己的
+     * 交叠计划交接 —— 这一条是需求里「已经播放的不算」的意思：优先级排的只是<b>待播</b>的那三档，
+     * 而灌单这个动作本身不碰播放头。</p>
+     *
+     * <p><b>去重是静默跳过，不是报错。</b>{@link #enqueue} 撞到重复要抛，因为那只对应一次点击；
+     * 一张单里有几首已经排上、或者正好是眼下在放的那首是常态，为它把整张单退回等于白灌。</p>
+     *
+     * <p><b>曲目一律不带直链。</b>客户端在这里只报元数据，谁真轮到才向房间要链接，由
+     * {@link #resolveLookahead()} 按前瞻窗分批问（见那里的注释）。所以 {@code Track.fromJson} 的
+     * 试听片段那一判在灌单这一路不会拦人 —— 拦了也只是跳过这一首，不影响整张单。</p>
+     *
+     * <p><b>人均排队上限 {@link #perMemberCap()} 在这里刻意不适用</b>：那一档是为了防止有人一首一首
+     * 把房间占满，而灌单一次就是几十首，套上去等于这个功能永远点不动。代替它的是
+     * {@link MpConfig#playlistBatchLimit}（单次总量）加 {@code maxQueueSize}（房间总量）两层闸。</p>
+     *
+     * @param playlistName 歌单名，进 {@link QueueEntry#playlist}，界面据此标出「这批是自动排的」
+     * @param tracks       {@code tracks} 数组，逐条走 {@link Track#fromJson}；坏的跳过
+     * @throws IllegalStateException 一首都没排上（全重复 / 全非法 / 队列已满），或单帧过大
      */
-    private int jumpInsertAt() {
+    public BatchResult enqueueBatch(UUID uuid, String name, String playlistName, JsonArray tracks) {
+        if (tracks == null || tracks.isEmpty()) throw new IllegalStateException("这张歌单里没有可以分享的曲目");
+        if (tracks.size() > MAX_BATCH_FRAME) {
+            throw new IllegalStateException("一次最多灌 " + MAX_BATCH_FRAME + " 首，请把长歌单分批投放");
+        }
+        String label = playlistName == null || playlistName.isBlank()
+                ? "未命名歌单" : playlistName.trim();
+        if (label.length() > 80) label = label.substring(0, 80);
+
+        int limit = cfg.playlistBatchLimit > 0
+                ? Math.min(cfg.playlistBatchLimit, tracks.size()) : tracks.size();
+        // 已经在队上的 / 正在播的那些 key 先收进一个集合：否则每灌一首都要扫一遍整队，
+        // 100 首 × 200 条队列就是两万次字符串拼接。
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (QueueEntry e : queue) seen.add(e.track.key());
+        if (current != null) seen.add(current.track.key());
+
+        int added = 0, duplicate = 0, invalid = 0, noLength = 0;
+        int capLeft = cfg.maxQueueSize > 0 ? cfg.maxQueueSize - queue.size() : tracks.size();
+        for (int i = 0; i < limit; i++) {
+            try {
+                if (!tracks.get(i).isJsonObject()) { invalid++; continue; }
+                Track track = Track.fromJson(tracks.get(i).getAsJsonObject(), cfg);
+                if (track.durationMs <= 0L) {
+                    // 没有时长就不知道什么时候交接：房间的自动进歌判据是
+                    // {@code positionMs() >= fireAt(dur)}，dur=0 时那句永远不成立，整间房间会
+                    // 卡在这一首上不动，只能靠有人手按「下一曲」救回来。一首一首点的时候这个坑
+                    // 已经在（而且点歌人自己那台通常知道时长），但一次灌一百首时它就是「房间停了
+                    // 半小时」，所以这里宁可跳过并说清楚 —— 有些平台的歌单列表行只给标题不给时长，
+                    // 要点开详情才有，那种平台的整张单会全部落到这个计数里，提示语会写明。
+                    noLength++;
+                    continue;
+                }
+                String key = track.key();
+                if (!seen.add(key)) { duplicate++; continue; }
+                if (capLeft <= 0) { invalid++; continue; }   // 队列已满，剩下的都不排
+                QueueEntry entry = new QueueEntry(track, uuid, name);
+                entry.tier = QueueEntry.TIER_PLAYLIST;
+                entry.playlist = label;
+                // 歌单档永远落在<b>队尾</b>：insertAt 在这里退化成 queue.size()，
+                // 于是同一张单内部的顺序就是歌单本身的顺序。
+                queue.add(insertAt(QueueEntry.TIER_PLAYLIST), entry);
+                added++;
+                capLeft--;
+            } catch (Throwable ignored) {
+                invalid++;   // 非法平台 / 没有歌曲 ID / 只有试听片段
+            }
+        }
+        if (added == 0) {
+            throw new IllegalStateException(firstReason(duplicate, invalid, noLength));
+        }
+        boolean truncated = limit < tracks.size();
+        BatchResult result = new BatchResult(label, added, duplicate, invalid, noLength, truncated);
+        if (current == null) {
+            // 起播的是<b>整条队列的头</b>，不是这张单子的第一首：房间里可能已经有人排着队，
+            // 按优先级他们那些本来就该先到。这里为空才轮不到他们，所以取 queue.get(0) 就够了。
+            startEntry(pollFront(queue.get(0)), 0L);
+        } else {
+            // 队首没动（灌单不插队），所以这里只是把新快照推给全房，然后按前瞻窗开始要链接。
+            broadcastQueue();
+            resolveLookahead();
+        }
+        return result;
+    }
+
+    /** 一首都没排上时，按最可能的那个原因说一句话。 */
+    private static String firstReason(int duplicate, int invalid, int noLength) {
+        if (noLength > 0 && noLength >= duplicate && noLength >= invalid) {
+            return "这些歌没有时长信息，房间不知道什么时候换歌（换一张给了时长的歌单再试）";
+        }
+        if (duplicate > 0 && duplicate >= invalid) return "这些歌已经在队列里或正在播放";
+        return "这张歌单里没有能进一起听的曲目（缺曲目 ID、平台未开放或只有试听片段）";
+    }
+
+    /** 一次灌单的结果汇总，只为了把「怎么少了 8 首」在聊天栏里说清楚。 */
+    public static final class BatchResult {
+        public final String playlist;
+        public final int added;
+        /** 队列里已有 / 正是当前在播的。 */
+        public final int duplicate;
+        /** 负载非法（缺歌曲 ID、平台未开放、只有试听片段）与被房间总队列上限挡下的。 */
+        public final int invalid;
+        /** 没有时长信息的：房间不知道该什么时候把它交接出去，所以一条都不排。 */
+        public final int noLength;
+        /** 被单次上限 {@code playlistBatchLimit} 截断过。 */
+        public final boolean truncated;
+
+        BatchResult(String playlist, int added, int duplicate, int invalid, int noLength,
+                    boolean truncated) {
+            this.playlist = playlist;
+            this.added = added;
+            this.duplicate = duplicate;
+            this.invalid = invalid;
+            this.noLength = noLength;
+            this.truncated = truncated;
+        }
+
+        /** 给聊天栏的一句话；只把真发生了的损失说出来，全顺利时不啰嗦。 */
+        public String describe() {
+            StringBuilder sb = new StringBuilder("已排入歌单《").append(playlist)
+                    .append("》").append(added).append(" 首");
+            List<String> notes = new ArrayList<>();
+            if (duplicate > 0) notes.add("跳过 " + duplicate + " 首已在队列或正在播");
+            if (noLength > 0) notes.add("跳过 " + noLength + " 首没有时长信息");
+            if (invalid > 0) notes.add("跳过 " + invalid + " 首不能播或队列已满");
+            if (truncated) notes.add("按单次上限截断");
+            if (!notes.isEmpty()) sb.append("（").append(String.join("，", notes)).append("）");
+            return sb.toString();
+        }
+    }
+
+    /**
+     * 这一档应该落在哪个下标：队列里第一个「档位比我高（排得更后）」的条目之前；一个都没有就落末尾。
+     *
+     * <p>它取代了原来的 {@code jumpInsertAt()}。那个方法只需要回答「插到队首那段插过队的之后」，
+     * 因为当时只有两档。三档之后同一句判断要覆盖三种来路：插队压在排队歌与歌单歌之前；点歌压在
+     * 歌单歌之前但排在插队段之后；歌单谁都不压，直接垫到最后。同一档内部保持先到先得，所以房主连点
+     * 三首「下一首播放」听到的仍然是 1、2、3 的正序 —— 这一条和改造前完全一致。</p>
+     *
+     * <p>这里按 {@code <=} 比较，靠的是队列<b>大体上按档位分段</b>这个不变式：所有自动插入都走
+     * 这个方法。唯一的例外是 {@link #moveEntry} 那种管理者显式挪位，它会把被挪的那一条按落点重新
+     * 定档（队首=插队、其余=排队），所以「把歌单里的某首拎到中间」之后它不会再被后来的点歌跨过。
+     * 极端挪法（把一条排队歌精确插进歌单段正中）会让分段不那么整齐，后果只是后来的点歌落在它前面
+     * —— 那是管理者自己排的顺序，不是队列排序坏了。</p>
+     */
+    private int insertAt(int tier) {
         int at = 0;
-        while (at < queue.size() && queue.get(at).jumped) at++;
+        while (at < queue.size() && queue.get(at).tier <= tier) at++;
         return at;
     }
 
@@ -434,6 +602,10 @@ public final class Room {
         if (from < 0) return false;
         int target = Math.max(0, Math.min(queue.size() - 1, to));
         QueueEntry e = queue.remove(from);
+        // 手动挪位是管理者的显式排位，所以这一条从此<b>不再受档位规则支配</b>：挪到队首就是
+        // 「下一首放它」（升成插队档，否则后面来一首普通点歌会按「点歌排在歌单之前」把它挤下去，
+        // 置顶等于没做）；挪到中间则升成排队档，不再被后来的点歌跨过。
+        e.tier = target == 0 ? QueueEntry.TIER_JUMP : QueueEntry.TIER_REQUEST;
         queue.add(target, e);
         // 移动可能把别的曲子挪到队首 —— 旧计划瞄准的已不是队首了。
         invalidatePlanIfHeadChanged();
@@ -446,6 +618,34 @@ public final class Room {
         // 队列空了就没有「下一首」，挂着的计划失去意义。
         invalidatePlanIfHeadChanged();
         broadcastQueue();
+    }
+
+    /**
+     * 撤回某张歌单灌进来、<b>还没播</b>的那批。
+     *
+     * <p>只删 {@link QueueEntry#playlist} 对上号的条目，而且<b>永不碰 {@link #current}</b>：
+     * 正在播的那一首哪怕正是这张单子里的，也已经播开了，撤走它等于全房硬切。这一条和灌单那句
+     * 「不打断正在播放的」是同一件事的两头 —— 进不来打断，出去也不该打断。</p>
+     *
+     * <p>非管理者只能撤自己灌的那批（按 {@code requester} 再判一次）。否则任何一个成员都能靠
+     * 报一个别人的歌单名把对方的队列拆掉，而界面上的名字是客户端自己填的。</p>
+     *
+     * @return 实际撤掉的条数，0 表示这个名字下没有任何还没播的条目
+     */
+    public int removePlaylist(UUID actor, String playlist) {
+        if (playlist == null || playlist.isEmpty()) return 0;
+        boolean control = controls(actor);
+        List<QueueEntry> doomed = new ArrayList<>();
+        for (QueueEntry e : queue) {
+            if (!playlist.equals(e.playlist)) continue;
+            if (!control && (actor == null || !actor.equals(e.requester))) continue;
+            doomed.add(e);
+        }
+        if (doomed.isEmpty()) return 0;
+        queue.removeAll(doomed);
+        invalidatePlanIfHeadChanged();
+        broadcastQueue();
+        return doomed.size();
     }
 
     // ── playback ─────────────────────────────────────────────────────────────
@@ -1057,6 +1257,9 @@ public final class Room {
         broadcastQueue();
         // 立刻指派分析者：整首歌都是它的预算，越早开始越从容（尤其是要借用别人电脑的那种）。
         assignAnalyzer(false);
+        // 换歌意味着前瞻窗往前滑了一格：新队首之后的那几首该开始备货了。长歌单放着不动时靠
+        // tick 里那个低频兜底，但换歌这一下必须当场走一遍，不然整批要等下一个兜底周期才开始问。
+        resolveLookahead();
     }
 
     private void requestUrl(QueueEntry entry) {
@@ -1137,6 +1340,42 @@ public final class Room {
         }
         for (UUID uuid : targets) send(uuid, m);
         if (!quiet) notice("正在获取《" + entry.track.name + "》的播放地址…");
+    }
+
+    /**
+     * 按<b>前瞻窗</b>向房间要链接：只看接下来 {@link MpConfig#queueResolveLead} 个位置，
+     * 其中没有可用直链的那些才发一次 {@link Proto#S_URL_NEEDED}。
+     *
+     * <p><b>为什么不是一灌完就把整张单问一遍。</b>一次 {@code requestUrl} 会按「谁最可能答得上」
+     * 逐个收件人<b>单播</b>一圈，收到的人在本机真跑一次取流。一张 100 首的单子一次性问完，就是把
+     * 点歌人（或者房间里那几个会员）的上行和平台接口按着一整张单猛抽一遍 —— 而其中大部分曲子要等
+     * 几十分钟才轮到，那时链接早过期了，等于白抽。取 2 首的含义是「至少提前一首把音频备好，
+     * 又不拿别人的账号去赌命中率」；一首歌有 3～5 分钟，两首的提前量足够把下载、解码都跑完。</p>
+     *
+     * <p><b>窗是相对于队首的，所以它会自己往前滑。</b>每次换歌（{@link #startEntryInternal}）和
+     * 每次队列变动都重新算一遍前 K 个位置，不需要额外记「解到第几首了」。tick 里再挂一个低频兜底：
+     * 一张长单子放着不动时，链接到期（{@link Track#hasFreshUrl()} 判的是还剩 15 秒以上）也能被重新问到。</p>
+     */
+    private void resolveLookahead() {
+        int lead = Math.max(1, cfg.queueResolveLead);
+        long now = System.currentTimeMillis();
+        for (int i = 0; i < queue.size() && i < lead; i++) {
+            QueueEntry e = queue.get(i);
+            if (e.track.hasFreshUrl()) continue;
+            String key = e.track.key();
+            Long at = resolveAskedAt.get(key);
+            if (at != null && now - at < RESOLVE_ASK_COOLDOWN_MS) continue;
+            resolveAskedAt.put(key, now);
+            // quiet=true：这是在提前备货，播放没有中断，不该往聊天栏刷一句「正在获取播放地址…」。
+            requestUrl(e, true);
+        }
+        // 这张表只记「问过的歌」，条目离队后就是垃圾。队不大时每次全量清一遍成本可接受，
+        // 队大到超过 64 条才清（否则每次前瞻都要把整队 key 拼一遍）。
+        if (resolveAskedAt.size() > 64) {
+            java.util.Set<String> alive = new java.util.HashSet<>();
+            for (QueueEntry e : queue) alive.add(e.track.key());
+            resolveAskedAt.keySet().retainAll(alive);
+        }
     }
 
     /**
@@ -1565,6 +1804,15 @@ public final class Room {
                 && now - lastRefreshAsk > 30_000L) {
             lastRefreshAsk = now;
             requestUrl(current, true);
+        }
+
+        // 前瞻窗低频兜底。换歌与队列变动时已经各跑一遍（那覆盖了绝大多数情况），这一遍管的是
+        // 「一张长歌单排在后面放着不动」：里面某首的链接到期了、或者当时没人答得上，就得靠它重新问。
+        // 十 tick 一次（默认 20 TPS ≈ 半秒）足够从容，而 resolveAskedAt 那层冷却保证不会真的
+        // 每半秒把同一首歌再问一遍。
+        if (++lookaheadCounter >= 10) {
+            lookaheadCounter = 0;
+            if (!waitingUrl) resolveLookahead();
         }
 
         // 心跳只在「房间确实在稳定播放」时发。两个门禁：
