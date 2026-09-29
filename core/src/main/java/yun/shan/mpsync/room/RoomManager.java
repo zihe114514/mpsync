@@ -577,7 +577,9 @@ public final class RoomManager {
                 Track track = Track.fromJson(Proto.obj(msg, "track"), cfg);
                 String who = Net.nameOf(uuid);
                 QueueEntry entry = room.enqueue(uuid, who, track, Proto.bool(msg, "next", false));
-                room.notice(who + " 点歌：" + entry.track.display());
+                // 插队与点歌在队列里落的位置不同，全房看到的这句也得不同：只写「点歌」的话，
+                // 别人只看到有人点了一首、自己的排队却被挤后，像是服务端排序坏了。
+                room.notice(who + (entry.jumped ? " 插了一首：" : " 点歌：") + entry.track.display());
             }
             case Proto.C_PLAY_NOW -> {
                 if (requireControl(uuid, control)) return;

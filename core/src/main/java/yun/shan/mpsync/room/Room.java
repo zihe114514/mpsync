@@ -341,9 +341,9 @@ public final class Room {
      * 点歌: queue a request. When nothing is playing the request starts immediately,
      * which is what makes the first pick in a fresh room audible without host action.
      *
-     * @param playNext insert at the head instead of the tail. Honoured only for
-     *                 owner/admin — letting any member jump the queue would make the
-     *                 "下一曲播放" button a way to cut in front of everyone else.
+     * @param playNext 插到队首那段插队位的末尾，而不是排队尾。只对房主/管理员生效 ——
+     *                 让任何成员都能插队的话，「下一曲播放」这颗按钮就成了插到所有人前面的后门。
+     *                 连续插队之间按插入顺序播（见 {@link #jumpInsertAt}），不是倒序。
      * @throws IllegalStateException with a user-facing reason when the queue rejects it
      */
     public QueueEntry enqueue(UUID uuid, String name, Track track, boolean playNext) {
@@ -359,8 +359,12 @@ public final class Room {
             if (e.track.key().equals(track.key())) throw new IllegalStateException("这首歌已经在队列里了");
         }
         QueueEntry entry = new QueueEntry(track, uuid, name);
-        if (playNext && controls(uuid)) queue.add(0, entry);
-        else queue.add(entry);
+        if (playNext && controls(uuid)) {
+            entry.jumped = true;
+            queue.add(jumpInsertAt(), entry);
+        } else {
+            queue.add(entry);
+        }
         if (current == null) {
             startEntry(pollFront(entry), 0L);
         } else {
@@ -378,6 +382,19 @@ public final class Room {
             }
         }
         return entry;
+    }
+
+    /**
+     * 插队应该落在哪个下标：队首那段「已经插过的」之后、第一首正常排队的之前。
+     *
+     * <p>直接用 {@code queue.add(0, ...)} 的话，房主连点三首「下一首播放」听到的是<b>倒序</b> ——
+     * 最后插的那最先播，而他明明是按 1、2、3 点的。数一下队首连续的 {@code jumped} 段当插入点，
+     * 插队之间就变成先到先得，同时整段仍然压在所有正常排队的歌前面。</p>
+     */
+    private int jumpInsertAt() {
+        int at = 0;
+        while (at < queue.size() && queue.get(at).jumped) at++;
+        return at;
     }
 
     private QueueEntry pollFront(QueueEntry expected) {

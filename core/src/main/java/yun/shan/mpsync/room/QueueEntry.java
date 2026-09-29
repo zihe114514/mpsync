@@ -26,6 +26,15 @@ public final class QueueEntry {
      */
     public volatile JsonObject automixPlan;
 
+    /**
+     * 这一格是房主/管理员用「下一首播放」<b>插</b>进来的。
+     *
+     * <p>只在服务端内部用，故意不上协议、不进 {@link #toJson(boolean)}：它唯一的作用是让连续插队
+     * 能认出「已经插过的那几格」，从而按插入顺序排而不是倒序（见 {@code Room#jumpInsertAt}）。
+     * 加一个 wire 字段要动客户端与快照，为一个纯内部排序问题不值当。</p>
+     */
+    public volatile boolean jumped;
+
     public QueueEntry(Track track, UUID requester, String requesterName) {
         this.track = track;
         this.requester = requester;
