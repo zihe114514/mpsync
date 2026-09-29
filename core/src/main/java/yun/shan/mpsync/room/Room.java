@@ -52,6 +52,14 @@ public final class Room {
      * 提前到曲子中段换歌。</p>
      */
     private static final long MAX_OVERLAP_MS = 60_000L;
+    /**
+     * 时钟静默窗的上限。
+     *
+     * <p>交叠可以合法地长达一分钟，但「完全不校准」本身也有代价：真脱节的客户端要靠心跳拉回来。
+     * 30 秒比任何一次实际的混音都宽（提前量封顶 12 秒，加上一段长尾奏也就十几二十秒），
+     * 又比一首歌的剩余部分短得多 —— 两头都顾得住。</p>
+     */
+    private static final long CLOCK_QUIET_MAX_MS = 30_000L;
 
     public final String id;
     public final String code;
@@ -106,10 +114,13 @@ public final class Room {
     private long lastRefreshAsk;
     private long allOfflineSince;
     /**
-     * 最近一次播放命令（换歌 / 暂停 / 恢复 / 拖进度 / 等到链接后起播）下发的时刻。
-     * 用来算时钟静默窗，见 {@link #inClockGrace}。
+     * 心跳静默到这一刻为止；0 = 不在静默窗内。
+     *
+     * <p>命令帧（换歌 / 暂停 / 恢复 / 拖进度 / 等到链接后起播）之后 {@link MpConfig#clockGraceMs}
+     * 内不发心跳 —— 全房都在开流，那会儿量出来的偏差不是脱节。<b>房间内 automix 的交叠</b>
+     * 要把这个窗按实际交叠长度再拉长一截，详见 {@link #markCommand(long)}。</p>
      */
-    private long lastCommandAt;
+    private long clockQuietUntil;
 
     /**
      * 当前被指派去算交接计划的那一台客户端；{@code null} = 这一首没有指派（没人能算，
@@ -446,13 +457,62 @@ public final class Room {
      * 那时候慢的客户端可能刚开始播，让它走满一个完整的广播间隔再校准。</p>
      */
     private void markCommand() {
-        lastCommandAt = System.currentTimeMillis();
+        markCommand(0L);
+    }
+
+    /**
+     * 同上，但把静默窗按一次<b>已知的过渡长度</b>来开：取 {@code protectMs} 与配置里那个窗
+     * 较远的那个，并夹到 {@link #CLOCK_QUIET_MAX_MS}。
+     *
+     * <p><b>为什么交叠要单独算。</b>房间里的混音长度由音频内容决定（{@code overlapMillis}，
+     * Folia 能挑出一段二十秒以上的长尾奏），而 {@link MpConfig#clockGraceMs} 只跟着配置的
+     * 提前量走（{@code load()} 的下限是 {@code automixLeadMs + 1000}）。窗只开五秒、淡入还在
+     * 继续时心跳就恢复，各客户端量到的「偏差」其实是本机比房间晚了几秒开始淡入 —— 帧延迟、
+     * 一条本来就落在软档里没纠的漂移、加上新播放牌的缓冲。拿它去比硬阈值，客户端就会在淡入
+     * 没结束时把刚进来的那一条薅回去，用户听到的正是交叠被截断。</p>
+     *
+     * <p>心跳在段里不发，客户端靠上一帧的位置自己外推（它本来就在两帧之间外推），界面照常走，
+     * 一段混音结束之后照旧恢复校准 —— 少几发心跳不换来的是别把播放头薅断。</p>
+     *
+     * @param protectMs 这一次过渡有多长；&lt;= 0 表示没有过渡，按配置的窗走
+     */
+    private void markCommand(long protectMs) {
+        long now = System.currentTimeMillis();
         tickCounter = 0;
+        long window = cfg.clockGraceMs;
+        if (protectMs > window) window = Math.min(protectMs, CLOCK_QUIET_MAX_MS);
+        clockQuietUntil = window > 0L ? now + window : 0L;
     }
 
     /** 是否还在命令帧之后的时钟静默窗内。 */
     private boolean inClockGrace(long now) {
-        return cfg.clockGraceMs > 0L && lastCommandAt > 0L && now - lastCommandAt < cfg.clockGraceMs;
+        return clockQuietUntil > 0L && now < clockQuietUntil;
+    }
+
+    /**
+     * 心跳还要被压多久（毫秒）；不在窗内时为 0。
+     *
+     * <p>诊断用：服主调 {@code clockGraceMs}／交接计划报了多长的交叠，最终落到这个数上。
+     * 出问题时的第一种问法就是「那几秒到底为什么不校准」。</p>
+     */
+    public long clockQuietRemainingMs() {
+        long left = clockQuietUntil - System.currentTimeMillis();
+        return left > 0L ? left : 0L;
+    }
+
+    /**
+     * 这一次交接<b>如果</b>按上报的计划走，会叠多久：离开的那一首所带计划里的
+     * {@code overlapMillis}；没开交叠、或这一首根本没有计划时为 0。
+     *
+     * <p>必须在 {@code current} 被换掉之前读 —— 那份计划描述的就是这一次交接。</p>
+     */
+    private long outgoingBlendMillis() {
+        if (cfg.automixLeadMs <= 0L) return 0L;
+        JsonObject plan = current == null ? null : current.automixPlan;
+        if (plan == null) return 0L;
+        long overlap = Proto.num(plan, "overlapMillis", 0L);
+        if (overlap <= 0L) return 0L;
+        return Math.min(overlap, MAX_OVERLAP_MS);
     }
 
     /** 此刻是否允许提前换歌：见 {@link #advanceLead()}。 */
@@ -911,7 +971,11 @@ public final class Room {
             // 入口点必须先算：plannedCue 要用「即将播的那一首」的曲长做夹取，
             // 而 queue.remove(0) 一执行，队首就换成再下一首了。
             long cue = plannedCue();
-            startEntry(queue.remove(0), cue);
+            // 交叠窗只有服务端自己到点提前换歌那一路才算：手动「下一首」、跳过坏曲目都不该
+            // 按上一首的计划把心跳多压一段，否则一次点跳过能让房间二十秒不校准。
+            // 同理，这一句必须排在 queue.remove(0) 之前 —— 计划挂在<b>离开</b>的那一首上。
+            long blend = auto ? outgoingBlendMillis() : 0L;
+            startEntry(queue.remove(0), cue, blend);
             return;
         }
         if (repeat == RepeatMode.ALL) {
@@ -941,10 +1005,23 @@ public final class Room {
     }
 
     private void startEntry(QueueEntry entry, long startPos) {
-        startEntryInternal(entry, startPos, true);
+        startEntryInternal(entry, startPos, true, 0L);
+    }
+
+    /**
+     * @param blendMillis 这一次换歌打算叠多久（见 {@link #outgoingBlendMillis()}）；
+     *                    0 = 没有交叠，静默窗退回配置的长度
+     */
+    private void startEntry(QueueEntry entry, long startPos, long blendMillis) {
+        startEntryInternal(entry, startPos, true, blendMillis);
     }
 
     private void startEntryInternal(QueueEntry entry, long startPos, boolean archiveCurrent) {
+        startEntryInternal(entry, startPos, archiveCurrent, 0L);
+    }
+
+    private void startEntryInternal(QueueEntry entry, long startPos, boolean archiveCurrent,
+                                    long blendMillis) {
         if (archiveCurrent && current != null && current != entry) {
             history.add(current);
             while (history.size() > HISTORY_MAX) history.remove(0);
@@ -962,8 +1039,9 @@ public final class Room {
         analystAttempt = 0;
         planTargetEntryId = 0L;   // 新 current 的 automixPlan 天然为 null，计划瞄准也要归零
         refusedAnalysts.clear();
-        // 换歌是最容易引发集体误判的时刻：全房都在开流，位置必然是散的。
-        markCommand();
+        // 换歌是最容易引发集体误判的时刻：全房都在开流，位置必然是散的。开着交叠时还要再多让
+        // 一段 —— 混音期间本机与房间时钟本来就「故意」差着几秒，那几发心跳只会把淡入薅断。
+        markCommand(blendMillis > 0L ? cfg.automixLeadMs + blendMillis + 1000L : 0L);
 
         if (!entry.track.hasFreshUrl()) {
             // No usable URL: hold the clock and ask a client to re-resolve. Pushing a
