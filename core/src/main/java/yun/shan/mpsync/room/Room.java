@@ -125,6 +125,19 @@ public final class Room {
     private boolean waitingUrl;
     private long waitingSince;
 
+    // ── 取流求助的层号：越小越可信 ────────────────────────────────────────────
+    //
+    // 为什么串行而不是一次全发：一次全发确实最快，可「最快」和「最可信」不是一回事 ——
+    // 先答先赢意味着一个手快的脚本贡献者会顶掉一个慢一点的会员答案，而本家会员直链更稳、
+    // 不烧第三方额度、过期时间也更从容。串行多等的这几秒只在「上一层真的没人」时才付出。
+    // 层与层的判据表见 C:\MUSIC\docs\房间分层代解析-弃权-换平台救援-契约.md §3。
+    static final int ASK_SERVER_TOKEN = 0, ASK_MEMBER = 1, ASK_CONTRIBUTED_LX = 2,
+            ASK_RESOLVABLE = 3, ASK_REQUESTER = 4, ASK_INSTALLED = 5, ASK_EVERYONE = 6;
+    /** 最后一个层号 + 1，表示「没有下一层了」。 */
+    static final int ASK_NONE = ASK_EVERYONE + 1;
+    /** 救援请求发出去之后给点歌人多久去搜、去验证、去取流。 */
+    private static final long RESCUE_WINDOW_MS = 12_000L;
+
     private int tickCounter;
     private long lastRefreshAsk;
     private long allOfflineSince;
@@ -1281,6 +1294,7 @@ public final class Room {
 
         // ① 服主配置了这个平台的 Token 时，先让服务端自己去解析。这条路对玩家零成本：
         //    不需要房间里恰好有个会员在线，也不需要谁把自己的账号暴露给别人。
+        //    它和「问人」并行，不占任何一层的窗口。
         ServerResolve hook = serverResolve;
         if (hook != null) {
             try {
@@ -1290,57 +1304,178 @@ public final class Room {
             }
         }
 
-        JsonObject m = Proto.msg(Proto.S_URL_NEEDED);
-        // 带上 source：客户端要据此决定用哪个平台的会话去重新解析，也用于确认这条应答是给
-        // 这首歌的。老客户端不读这个字段，行为不变。
-        m.addProperty("source", source);
-        m.addProperty("songId", entry.track.songId);
-        m.addProperty("name", entry.track.name);
-
-        // ② 再问客户端。顺序即「谁最可能答得上」：
-        //    贡献 VIP 的成员 → 贡献 LX 的成员 → 装了这个平台的成员 → 点歌人 → 管理者 → 所有人。
-        //
-        //    为什么把贡献者放最前：他们明确表示愿意替房间解析，而且档案里说明了自己答得上这个
-        //    平台。先问一次注定能答上的人，比广播给全房再等谁碰巧是会员要快得多，也少打扰。
-        //
-        //    例外：曲目压根没有链接，说明点歌人刚刚已经试过并且失败了（非会员只解析到试听片段，
-        //    客户端会保持沉默）。这种情况下把他排到最后，让可能是会员的其他成员先答，省掉一次
-        //    注定无用的往返。
-        boolean requesterAlreadyFailed = !entry.track.hasFreshUrl();
-        List<UUID> targets = new ArrayList<>();
-        PresenceRegistry pr = presence;
-        if (pr != null && cfg.preferContributors) {
-            for (Member mem : members.values()) {
-                if (mem.online && pr.contributesVip(mem.uuid, source)) targets.add(mem.uuid);
-            }
-            // 「贡献 LX」一层。排在「贡献 VIP」之后：本家会员解出来的直链更稳（官方 CDN、
-            // 时长完整、过期时间也更从容），而且先问 LX 会白白消耗第三方接口的额度 ——
-            // 同一个平台上本家答得上时不该动用到它。但 LX 贡献者仍然远比「装了但不保证
-            // 肯答」的第三层可靠，所以排在那之前。
-            for (Member mem : members.values()) {
-                if (mem.online && pr.contributesLx(mem.uuid, source) && !targets.contains(mem.uuid)) {
-                    targets.add(mem.uuid);
-                }
-            }
-            for (Member mem : members.values()) {
-                if (mem.online && pr.canResolve(mem.uuid, source) && !targets.contains(mem.uuid)) {
-                    targets.add(mem.uuid);
-                }
-            }
-        }
-        if (!requesterAlreadyFailed && entry.requester != null && members.containsKey(entry.requester)
-                && !targets.contains(entry.requester)) {
-            targets.add(entry.requester);
-        }
-        for (Member mem : members.values()) {
-            if (mem.role.controls() && !targets.contains(mem.uuid)) targets.add(mem.uuid);
-        }
-        for (Member mem : members.values()) {
-            if (!targets.contains(mem.uuid)) targets.add(mem.uuid);
-        }
-        for (UUID uuid : targets) send(uuid, m);
-        if (!quiet) notice("正在获取《" + entry.track.name + "》的播放地址…");
+        // ② 已经在等某一层了就别重开：前瞻窗每换一次歌、每动一次队列都会跑一遍，重开会把
+        //    刚发出去的那一层抹掉重来，等于一首歌反复问同一批人。
+        if (entry.askTier != QueueEntry.ASK_IDLE) return;
+        advanceAsk(entry, ASK_MEMBER, quiet);
+        if (!quiet && entry.askTier != QueueEntry.ASK_IDLE)
+            notice("正在获取《" + entry.track.name + "》的播放地址…");
     }
+
+    /**
+     * 从 {@code from} 层起往下找第一个<b>还有点名人可问</b>的层，把 {@code url_needed} 只发给
+     * 那一层新增的人，并起这一层的窗口表。一层人都没有就继续往下，全层走完则求一次跨平台救援。
+     */
+    private void advanceAsk(QueueEntry entry, int from, boolean quiet) {
+        String source = entry.track.source;
+        // 曲目压根没有链接 = 点歌人刚刚已经试过并且失败了（非会员只解到试听片段时客户端会沉默）。
+        // 这种情况下把他排到「装了该平台」之后，省掉一次注定无用的往返。
+        boolean requesterFailed = !entry.track.hasFreshUrl();
+        for (int tier = from; tier < ASK_NONE; tier++) {
+            List<UUID> targets = tierTargets(entry, source, tier, requesterFailed);
+            if (targets.isEmpty()) continue;
+            for (UUID uuid : targets) entry.markAsked(uuid);
+            entry.openTier(tier, targets);
+            JsonObject m = Proto.msg(Proto.S_URL_NEEDED);
+            // source：客户端据此决定用哪个平台的会话去解，也用来确认这条应答是给这首歌的。
+            m.addProperty("source", source);
+            m.addProperty("songId", entry.track.songId);
+            m.addProperty("name", entry.track.name);
+            // 新三个字段。老客户端三个都不读，行为与改动前一致（只是服务端等满窗口才推进）。
+            m.addProperty("entryId", entry.entryId);
+            m.addProperty("tier", tier);
+            m.addProperty("deadlineMs", System.currentTimeMillis() + tierWindowMs(tier));
+            for (UUID uuid : targets) send(uuid, m);
+            return;
+        }
+        entry.closeAsk();
+        askRescue(entry);
+    }
+
+    /** 这一层该问谁：在线 + 档案判据 + 没在前面的层里答过或弃权过。 */
+    private List<UUID> tierTargets(QueueEntry entry, String source, int tier, boolean requesterFailed) {
+        List<UUID> out = new ArrayList<>();
+        PresenceRegistry pr = presence;
+        boolean contributors = pr != null && cfg.preferContributors;
+        switch (tier) {
+            case ASK_MEMBER -> {
+                if (!contributors) return out;
+                for (Member m : members.values())
+                    if (m.online && pr.isMember(m.uuid, source) && pr.contributesVip(m.uuid, source)
+                            && !entry.spoken(m.uuid)) out.add(m.uuid);
+            }
+            case ASK_CONTRIBUTED_LX -> {
+                if (!contributors) return out;
+                for (Member m : members.values())
+                    if (m.online && pr.contributesLx(m.uuid, source) && !entry.spoken(m.uuid))
+                        out.add(m.uuid);
+            }
+            case ASK_RESOLVABLE -> {
+                if (!contributors) return out;
+                // 「贡献 VIP」但不在第 1 层的那批：本来不卖会员的平台、以及登录了但档位查不到
+                // 的平台（QQ 那类）。它们给得出完整版，只是不像真会员那样稳。
+                for (Member m : members.values())
+                    if (m.online && pr.contributesVip(m.uuid, source) && !pr.isMember(m.uuid, source)
+                            && !entry.spoken(m.uuid)) out.add(m.uuid);
+            }
+            case ASK_REQUESTER -> {
+                if (requesterFailed || entry.requester == null) return out;
+                Member m = members.get(entry.requester);
+                if (m != null && m.online && !entry.spoken(m.uuid)) out.add(m.uuid);
+            }
+            case ASK_INSTALLED -> {
+                for (Member m : members.values())
+                    if (m.online && (pr == null || pr.canResolve(m.uuid, source))
+                            && !entry.spoken(m.uuid)) out.add(m.uuid);
+            }
+            default -> {
+                for (Member m : members.values())
+                    if (m.online && !entry.spoken(m.uuid)) out.add(m.uuid);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 这一层等多久。
+     *
+     * <p>最后一层<b>也</b>只等一个层窗口，而不是把总闸 {@link MpConfig#urlWaitTimeoutMs} 剩下的
+     * 时间全吃掉 —— 曾经就是这么写的，于是「全层落空 → 向点歌人求跨平台救援」那一步永远走不到：
+     * 总闸到点时 tick 先判等链超时、直接跳过这首歌并 return，分层再也没机会推进到救援那一手。
+     * 现在六层各等 3 秒，18 秒走完，剩下的预算才留给救援。</p>
+     */
+    private long tierWindowMs(int tier) {
+        return cfg.urlTierTimeoutMs;
+    }
+
+    /**
+     * 全层落空：给点歌人一次「换到别的平台的同一首歌」的机会。
+     *
+     * <p>只单播给他，不广播：跨平台换源要搜索、要验证，烧的是执行者自己的上行与第三方额度，
+     * 而这首歌是他点的 —— 由他决定值不值。他没在线、已经问过、或者压根没配救援能力，就直接
+     * 放弃这一层链，让总闸到点跳过。</p>
+     */
+    private void askRescue(QueueEntry entry) {
+        if (entry.rescueAsked || entry.requester == null) return;
+        Member m = members.get(entry.requester);
+        if (m == null || !m.online) return;
+        entry.rescueAsked = true;
+        entry.rescueSince = System.currentTimeMillis();
+        JsonObject msg = Proto.msg(Proto.S_SWITCH_RESCUE);
+        msg.addProperty("entryId", entry.entryId);
+        msg.addProperty("source", entry.track.source);
+        msg.addProperty("songId", entry.track.songId);
+        msg.addProperty("name", entry.track.name);
+        msg.addProperty("artist", entry.track.artist);
+        msg.addProperty("duration", entry.track.durationMs);
+        msg.addProperty("deadlineMs", System.currentTimeMillis() + RESCUE_WINDOW_MS);
+        send(m.uuid, msg);
+        notice("房间里没人能放《" + entry.track.name + "》，正在问点歌人换别的平台版本…");
+    }
+
+    /** 收一条弃权。层号对不上就当过期帧丢弃 —— 迟到的弃权会把还没问到的层提前推完。 */
+    public void declineUrl(UUID uuid, long entryId, int tier, String source, String songId,
+                           String reason) {
+        QueueEntry entry = askTarget(entryId, source, songId);
+        if (entry == null || entry.askTier != tier) return;
+        if (!entry.decline(uuid)) return;
+        advanceAsk(entry, tier + 1, true);
+    }
+
+    /** 按 entryId 找那一格；老客户端不带 entryId 时退回按 source+songId 认。 */
+    private QueueEntry askTarget(long entryId, String source, String songId) {
+        String key = (source == null || source.isBlank() ? Proto.SOURCE_NETEASE : source)
+                + ":" + (songId == null ? "" : songId);
+        if (current != null && (entryId == current.entryId || current.track.key().equals(key)))
+            return current;
+        for (QueueEntry e : queue) {
+            if (entryId != 0L ? e.entryId == entryId : e.track.key().equals(key)) return e;
+        }
+        return null;
+    }
+
+    /**
+     * 点歌人换到了别的平台的同一首歌：就地替掉那一格。
+     *
+     * <p>位置、档位、点歌人、{@code entryId} 全部保持不变 —— 别人排在他后面的歌不该因为这一格
+     * 换了平台就被挪走，而客户端界面正盯着这一行看。换完立刻按新的平台重新走分层。</p>
+     */
+    public String replaceTrack(UUID uuid, long entryId, JsonObject track) {
+        QueueEntry entry = entryId == 0L ? null : entryOf(entryId, "");
+        if (entry == null) return "这首歌已经不在队列里了";
+        if (entry.requester != null && !entry.requester.equals(uuid) && !controls(uuid))
+            return "只有点歌人能替换这首歌的平台版本";
+        Track next = Track.fromJson(track, cfg);
+        if (next == null) return "换源结果缺少曲目 ID";
+        if (next.key().equals(entry.track.key())) return null;   // 同一平台同一首，什么都没换
+        entry.track = next;
+        entry.adoptedTier = QueueEntry.ADOPTED_NONE;
+        entry.closeAsk();
+        entry.clearDeclined();
+        notice("《" + entry.track.name + "》换到 " + next.source + " 版本，重新获取播放地址…");
+        if (current == entry) {
+            playing = false;
+            waitingUrl = true;
+            waitingSince = System.currentTimeMillis();
+            requestUrl(entry);
+            broadcastState();
+        } else {
+            requestUrl(entry, true);
+            broadcastQueue();
+        }
+        return null;
+    }
+
 
     /**
      * 按<b>前瞻窗</b>向房间要链接：只看接下来 {@link MpConfig#queueResolveLead} 个位置，
@@ -1386,15 +1521,45 @@ public final class Room {
      * all members. A rejected answer changes nothing and the room keeps waiting, giving a
      * member who can resolve the full track a chance to answer.
      */
-    public void supplyUrl(String source, String songId, String url, long expiresAt, long servedDurationMs) {
+    public void supplyUrl(String source, String songId, String url, long expiresAt,
+                          long servedDurationMs) {
+        // 服务端自解（服主 Token）那一手没有「谁答的」，按最可信的层记账。
+        supplyUrl(null, 0L, source, songId, url, expiresAt, servedDurationMs, false);
+    }
+
+    /**
+     * 收一条代解析回来的直链。
+     *
+     * <p>判据从「先答先赢」改成「<b>按可信度</b>」：每条答案都记着它出自第几层，只有比现在这条
+     * 更可信（层号更小）的答案才允许替换。于是迟到的真会员链接能顶掉先到的脚本链接，反过来不行；
+     * 同层内先答先赢 —— 两条同层的链接互相覆盖会打乒乓，而它们本来就该是同一档质量。</p>
+     *
+     * <p>顺带修掉一处既有的自伤：老写法对<b>正在播</b>那一格无条件调 {@code adoptUrl}，而它在
+     * 判据不过时会把 {@code url/urlExpiresAt/urlDuration} 三个字段一起清零 —— 一条迟到的不合格
+     * 答案会把好好在播的链接抹掉，晚进房的人就拿不到地址了。现在不合格的答案根本走不到那一步。</p>
+     *
+     * @param from        谁答的；{@code null} = 服务端自解
+     * @param entryId     答的是哪一格；老客户端不发，退回按 {@code source+songId} 认
+     * @param estimated   {@code servedDurationMs} 是算出来的还是测出来的（见 {@link
+     *                    Track#adoptUrl(String, long, long, MpConfig, boolean)}）
+     */
+    public void supplyUrl(UUID from, long entryId, String source, String songId, String url,
+                          long expiresAt, long servedDurationMs, boolean estimated) {
         if (songId == null) return;
         // 老客户端的 url_supply 不带 source，按网易云处理。
         String key = (source == null || source.isBlank() ? Proto.SOURCE_NETEASE : source) + ":" + songId;
-        boolean touched = false;
-        if (current != null && current.track.key().equals(key)) {
+        QueueEntry hit = entryOf(entryId, key);
+        if (hit == null) return;
+        int tier = from == null ? ASK_SERVER_TOKEN
+                : hit.askTier == QueueEntry.ASK_IDLE ? ASK_EVERYONE : hit.askTier;
+        if (!hit.canAdoptTier(tier)) return;
+
+        if (hit == current) {
             boolean wasStalled = waitingUrl;
-            if (!current.track.adoptUrl(url, expiresAt, servedDurationMs, cfg)) return;
-            if (current.track.hasFreshUrl() && wasStalled) {
+            if (!hit.track.adoptUrl(url, expiresAt, servedDurationMs, cfg, estimated)) return;
+            hit.adoptedTier = tier;
+            hit.closeAsk();
+            if (hit.track.hasFreshUrl() && wasStalled) {
                 // The room was holding for this URL: start the clock and push play.
                 waitingUrl = false;
                 playing = true;
@@ -1409,15 +1574,26 @@ public final class Room {
             }
             // Pre-emptive refresh while playing: store it silently so late joiners get a
             // live link. Re-broadcasting play here would restart everyone mid-song.
-            touched = true;
+            broadcastQueue();
+            return;
         }
-        for (QueueEntry e : queue) {
-            if (e.track.key().equals(key) && !e.track.hasFreshUrl()
-                    && e.track.adoptUrl(url, expiresAt, servedDurationMs, cfg)) {
-                touched = true;
-            }
+        if (hit.track.hasFreshUrl()) return;
+        if (!hit.track.adoptUrl(url, expiresAt, servedDurationMs, cfg, estimated)) return;
+        hit.adoptedTier = tier;
+        hit.closeAsk();
+        broadcastQueue();
+    }
+
+    /** 按 entryId 找那一格；不带 entryId 的老帧按 {@code key} 认（当前曲目优先）。 */
+    private QueueEntry entryOf(long entryId, String key) {
+        if (entryId != 0L) {
+            if (current != null && current.entryId == entryId) return current;
+            for (QueueEntry e : queue) if (e.entryId == entryId) return e;
+            return null;
         }
-        if (touched) broadcastQueue();
+        if (current != null && current.track.key().equals(key)) return current;
+        for (QueueEntry e : queue) if (e.track.key().equals(key)) return e;
+        return null;
     }
 
     public void pause() {
@@ -1764,6 +1940,25 @@ public final class Room {
 
     // ── tick ─────────────────────────────────────────────────────────────────
 
+    /**
+     * 每一层的等待窗到点就往下推一层。
+     *
+     * <p>收齐弃权时 {@link #declineUrl} 会当场推进，这一遍管的是「没人回话」那种 —— 老客户端
+     * 根本不发 {@code url_decline}，只能靠窗口自己走完，所以这一遍不能省。</p>
+     */
+    private void tickUrlTiers(long now) {
+        if (current != null) tickOneTier(current, now);
+        for (QueueEntry e : queue) tickOneTier(e, now);
+    }
+
+    private void tickOneTier(QueueEntry entry, long now) {
+        int tier = entry.askTier;
+        if (tier == QueueEntry.ASK_IDLE) return;
+        if (entry.track.hasFreshUrl()) { entry.closeAsk(); return; }
+        if (now - entry.askTierSince <= tierWindowMs(tier)) return;
+        advanceAsk(entry, tier + 1, true);
+    }
+
     public void tick() {
         long now = System.currentTimeMillis();
 
@@ -1780,6 +1975,11 @@ public final class Room {
             next(false);
             return;
         }
+
+        // 取流分层的推进：这一层等满了还没人答，就问下一层。
+        // 排在总闸（上面那段）之后，所以总闸永远优先 —— 最坏情况是只问了几层就被跳过，
+        // 而不是分层把「这首歌到底放不放」这件事拖到无限久。
+        tickUrlTiers(now);
 
         // 分析者的指派与超时改派。**必须排在换歌判断之前**：一首曲子临到交接点时下面那一句会
         // 直接 next(true) 返回，改派就永远轮不到 —— 而那恰恰是最需要补救的时刻（真正能算的那台

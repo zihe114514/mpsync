@@ -2,6 +2,8 @@ package yun.shan.mpsync.room;
 
 import com.google.gson.JsonObject;
 
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -19,7 +21,14 @@ public final class QueueEntry {
 
     /** Stable handle so clients can remove/move an entry without index races. */
     public final long entryId = SEQ.getAndIncrement();
-    public final Track track;
+    /**
+     * 这一首。<b>刻意可变</b>：整房没人答得上时，点歌人可以换到别的平台的同一首歌，
+     * 服务端就地把它替掉（{@link Room#replaceTrack}），队列位置、档位、点歌人都保持不变。
+     *
+     * <p>读它的人不少（快照、前瞻、播放、续签），所以 {@code volatile} 不是装饰：
+     * 替换发生在网络线程，而 {@link Room#tick} 与快照在别的线程上遍历队列。</p>
+     */
+    public volatile Track track;
     public final UUID requester;
     public final String requesterName;
     public final long addedAt = System.currentTimeMillis();
@@ -55,6 +64,86 @@ public final class QueueEntry {
      *  nobody 看得出后面几十首是自动排的，也就不知道自己点的那首其实会插在那批歌前面。</p>
      */
     public volatile String playlist = "";
+
+
+    // ── 分层代解析的会话状态（不上协议，只活在这一格的生命周期里）──────────────
+    //
+    // 为什么挂在条目上而不是 Room 上：前瞻窗同时开着最多 K 首的解析（默认 2 首），
+    // 加上正在播那一首，同一时刻可能有三格各自在等不同层。Room 里放一个「当前第几层」
+    // 会让它们互相踩，而 QueueEntry 本来就是这条链路的自然主键（entryId 就是为它设计的）。
+
+    /** 没有任何一层在等 —— 初始态，以及采纳/放弃之后回到这里。 */
+    public static final int ASK_IDLE = -1;
+    /** 还没采纳过任何答案。采纳之后这里记的是<b>采纳来自第几层</b>。 */
+    public static final int ADOPTED_NONE = Integer.MAX_VALUE;
+
+    /** 当前那一层的层号（0 = 服主 Token 的服务端自解那一层），{@link #ASK_IDLE} = 没在等。 */
+    public volatile int askTier = ASK_IDLE;
+    /** 这一层是什么时候发出去的，{@link Room#tick} 据此推进。 */
+    public volatile long askTierSince;
+    /** 这一层点过名的人（含更早层点过的，避免同一台被问两遍）。 */
+    private final Set<UUID> asked = new LinkedHashSet<>();
+    /** 这一层里已经当场弃权的人。收齐就立刻推进，不等窗口。 */
+    private final Set<UUID> declined = new LinkedHashSet<>();
+    /** 已采纳的答案来自第几层。迟到的<b>更小</b>层号可以覆盖它（见 {@link #canAdoptTier}）。 */
+    public volatile int adoptedTier = ADOPTED_NONE;
+    /** 已经向点歌人求过跨平台救援（一首歌只给一次机会，别反复骚扰同一台机器）。 */
+    public volatile boolean rescueAsked;
+    /** 发出救援请求的时刻，超时之后就当它没了。 */
+    public volatile long rescueSince;
+
+    /** 这一层点名过谁（用于「收齐弃权」的判据）。 */
+    public Set<UUID> asked() { synchronized (asked) { return new LinkedHashSet<>(asked); } }
+
+    /** 把 {@code uuid} 记进「这一层问过」，返回是不是新面孔（老面孔不该再收这一发）。 */
+    public boolean markAsked(UUID uuid) {
+        if (uuid == null) return false;
+        synchronized (asked) { return asked.add(uuid); }
+    }
+
+    /** 开一层：清空上一轮的弃权、记下层号与起表时刻。 */
+    public void openTier(int tier, java.util.Collection<UUID> recipients) {
+        synchronized (asked) { if (recipients != null) asked.addAll(recipients); }
+        synchronized (declined) { declined.clear(); }
+        askTier = tier;
+        askTierSince = System.currentTimeMillis();
+    }
+
+    /** 收一条弃权，返回「这一层是不是已经全弃权了」（全弃权就立刻推进，不等窗口）。 */
+    public boolean decline(UUID uuid) {
+        if (uuid == null) return false;
+        synchronized (declined) { declined.add(uuid); }
+        Set<UUID> who = asked();
+        Set<UUID> out;
+        synchronized (declined) { out = new LinkedHashSet<>(declined); }
+        return !who.isEmpty() && who.containsAll(out);
+    }
+
+    public void clearDeclined() { synchronized (declined) { declined.clear(); } }
+
+    /** 这一层里已经答过或弃权过的人不该再被同一层问一次。 */
+    public boolean spoken(UUID uuid) {
+        Set<UUID> who = asked();
+        Set<UUID> out;
+        synchronized (declined) { out = new LinkedHashSet<>(declined); }
+        return who.contains(uuid) || out.contains(uuid);
+    }
+
+    /** 结束这一层的等待（采纳到了、或者决定跳过）。 */
+    public void closeAsk() {
+        askTier = ASK_IDLE;
+        askTierSince = 0L;
+        synchronized (declined) { declined.clear(); }
+    }
+
+    /**
+     * 一个来自第 {@code tier} 层的答案能不能采纳。
+     *
+     * <p>规则只有一条：<b>比现在这条更可信（层号更小）才行</b>。同层内先答先赢 —— 两条同层的
+     * 链接互相覆盖会打乒乓，而它们本来就该是同一档质量。没采纳过（{@link #ADOPTED_NONE}）
+     * 时任何合格答案都能进。</p>
+     */
+    public boolean canAdoptTier(int tier) { return tier < adoptedTier; }
 
     /** 这一格是不是房主/管理员插进来的。 */
     public boolean jumped() { return tier == TIER_JUMP; }

@@ -753,13 +753,28 @@ public final class RoomManager {
                         Proto.bool(msg, "agree", true));
                 if (err != null) Net.error(uuid, err);
             }
-            // 直链应答：必须连带平台一起回传，否则跨平台房间里 songId 相同的两首歌会串链接
-            case Proto.C_URL_SUPPLY -> room.supplyUrl(
+            // 直链应答：必须连带平台一起回传，否则跨平台房间里 songId 相同的两首歌会串链接。
+            // 还要带上<b>是谁答的</b>与 entryId：分层采纳要记「这条链接出自第几层」，
+            // 而迟到答案能不能覆盖先到的，全看那个层号 —— 不传就只能退回先答先赢。
+            case Proto.C_URL_SUPPLY -> room.supplyUrl(uuid,
+                    Proto.num(msg, "entryId", 0L),
                     Proto.str(msg, "source", Proto.SOURCE_NETEASE),
                     Proto.str(msg, "songId", ""),
                     Proto.str(msg, "url", ""),
                     Proto.num(msg, "urlExpiresAt", 0L),
-                    Proto.num(msg, "urlDuration", 0L));
+                    Proto.num(msg, "urlDuration", 0L),
+                    Proto.bool(msg, "urlDurationEstimated", false));
+            // 弃权：这一层答不上，当场说一声，服务端收齐就立刻推进下一层。
+            case Proto.C_URL_DECLINE -> room.declineUrl(uuid,
+                    Proto.num(msg, "entryId", 0L),
+                    (int) Proto.num(msg, "tier", -1L),
+                    Proto.str(msg, "source", Proto.SOURCE_NETEASE),
+                    Proto.str(msg, "songId", ""),
+                    Proto.str(msg, "reason", ""));
+            // 跨平台救援的答卷：把那一格换成另一平台的同一首歌。
+            case Proto.C_TRACK_REPLACE -> room.replaceTrack(uuid,
+                    Proto.num(msg, "entryId", 0L),
+                    Proto.obj(msg, "track"));
             // 交接计划。服务端只做校验与广播 —— 分析需要音频，只能在客户端做；
             // 但交接点必须全房一致，所以由一台算出、服务端存下并转发。
             // 「哪一台」不再是房主：服务端按「点歌人 → 房主 → 房间里任何能算的人」指派

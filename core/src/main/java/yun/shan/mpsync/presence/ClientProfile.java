@@ -136,6 +136,18 @@ public final class ClientProfile {
                 || (resolvableSources.contains(s) && !viaLxSources.contains(s));
     }
 
+    /**
+     * 这个平台上<b>真会员</b>。只认客户端报进 {@code member} 的那些 —— 查不到档位的平台
+     * （QQ 的上游就没有会员字段）宁可这里恒 false，也不拿「登录了」猜一个真会员。
+     *
+     * <p>老客户端没报过新数组（{@code capabilityKnown} 为假）时这里就是 false：它只报了
+     * {@code vip}，而 {@code vip} 是登录态，不能当会员用。那一档由分层里的第 3 层接住。</p>
+     */
+    public boolean isMember(String source) {
+        if (source == null || !capabilityKnown) return false;
+        return memberSources.contains(source.trim().toLowerCase(Locale.ROOT));
+    }
+
     /** 「贡献 LX」档：愿意用 LX 脚本替房间解歌，且该平台确实只有靠 LX 才解得出。 */
     public boolean contributesLx(String source) {
         if (!contributeLx || source == null) return false;

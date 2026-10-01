@@ -106,6 +106,28 @@ public final class MpConfig {
      * 并在 {@link #load} 里兜一个 12 秒的下限。</p>
      */
     public long urlWaitTimeoutMs = 20_000L;
+    /**
+     * 分层代解析里<b>每一层</b>的等待窗。
+     *
+     * <p>{@link #urlWaitTimeoutMs} 是总闸（到点就跳过这首歌），这一项是闸内的推进节奏：
+     * 「真会员 → 贡献 LX → 只登录/不卖会员的平台 → 点歌人 → 装了该平台的成员 → 全房」每层等这么
+     * 久，没人答或者全部弃权就换下一层。默认 3 秒 —— 装得下「发问 → 客户端向平台发一次 HTTP →
+     * 回帧」一个别人机器上的往返，而六层全走完（18 秒）仍留在 {@link #urlWaitTimeoutMs} 之内，
+     * 剩下那几秒才是留给跨平台救援的。取 5 秒的话整条链走不完，救援永远轮不上。</p>
+     *
+     * <p>设得比总闸还长没有意义，{@link #load} 里把它夹到不超过总闸的一半，
+     * 免得配错之后只剩第一层被问过一次。</p>
+     */
+    public long urlTierTimeoutMs = 3_000L;
+    /**
+     * <b>估算</b>出来的「链接实际服务多长」用的试听阈值，比 {@link #minStreamDurationRatio} 宽。
+     *
+     * <p>网易云会在同一次响应里报出真实长度，那个数可以直接卡 80%。酷狗（filesize ÷ 档位码率）
+     * 与 LX 脚本（HEAD 拿 Content-Length ÷ 脚本声明的 format）两条路都是<b>算出来的</b>：
+     * CDN 报的尺寸可能是容器大小、码率可能标称高于实际，按 80% 卡会把完整版误判成试听片段，
+     * 而误判的代价是整房白等一轮再跳过一首本来能放的歌。所以估算只卡明显不对的（默认 50%）。</p>
+     */
+    public double estimatedStreamDurationRatio = 0.5;
     /** Drop a room once every member has been offline this long. */
     public long emptyRoomGraceMs = 5 * 60 * 1000L;
     /** Allow members without control rights to 点歌. */
@@ -313,6 +335,14 @@ public final class MpConfig {
             if (cfg.assumedUrlLifetimeMs < 60_000L) cfg.assumedUrlLifetimeMs = 60_000L;
             // 低于这个值时「向别的成员要链接」在物理上来不及，等于把功能关掉，所以兜底抬上来。
             if (cfg.urlWaitTimeoutMs < 12_000L) cfg.urlWaitTimeoutMs = 12_000L;
+            if (cfg.urlTierTimeoutMs < 2_000L) cfg.urlTierTimeoutMs = 2_000L;
+            // 分层推进要能在总闸里走完几层：一层比总闸还长就等于只有第一层被问过。
+            if (cfg.urlTierTimeoutMs > cfg.urlWaitTimeoutMs / 2L)
+                cfg.urlTierTimeoutMs = Math.max(2_000L, cfg.urlWaitTimeoutMs / 2L);
+            if (cfg.estimatedStreamDurationRatio < 0d) cfg.estimatedStreamDurationRatio = 0d;
+            // 估算的阈值只许比实测更宽，反过来会让估算值比实测还容易挨拒。
+            if (cfg.estimatedStreamDurationRatio > cfg.minStreamDurationRatio)
+                cfg.estimatedStreamDurationRatio = cfg.minStreamDurationRatio;
             if (cfg.minStreamDurationRatio < 0d) cfg.minStreamDurationRatio = 0d;
             if (cfg.minStreamDurationRatio > 1d) cfg.minStreamDurationRatio = 1d;
             // v2 新增项：老配置文件里没有它们，gson 会留成 null / 0，逐项兜底。

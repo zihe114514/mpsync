@@ -69,6 +69,18 @@ public final class PresenceRegistry {
         return p != null && p.contributesLx(source);
     }
 
+    /**
+     * 这个平台上是<b>真会员</b>（客户端报的 {@code member} 数组里有）。
+     *
+     * <p>取流分层里第 1 层只问这一档。它和 {@link #contributesVip} 的差别就是这次分层的全部意义：
+     * 后者还包含「这个平台本来不卖会员」的那类，那一路同样能给完整版，但不该占着第一层 ——
+     * 会员答案的过期时间与稳定性都更好，先问它。</p>
+     */
+    public boolean isMember(UUID uuid, String source) {
+        ClientProfile p = get(uuid);
+        return p != null && p.isMember(source);
+    }
+
     /** 有能力解析（不管愿不愿意贡献）——排在贡献者后面问。 */
     public boolean canResolve(UUID uuid, String source) {
         ClientProfile p = get(uuid);

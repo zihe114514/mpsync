@@ -195,6 +195,29 @@ public final class Proto {
      * 每首白等一个超时窗的关键。{@code entryId} = 拒绝的是哪一份。</p>
      */
     public static final String C_ANALYZE_DECLINE = "analyze_decline";
+    /**
+     * 对 {@link #S_URL_NEEDED} 的<b>弃权</b>：「这一层我不答，别再等我了」。
+     *
+     * <p>沉默不是弃权的替代物。老规矩是「解不出就闭嘴」，那对<b>并行竞速</b>是对的 —— 反正没人等；
+     * 改成按层串行之后，闭嘴等于让整房白等一个窗口（默认 5 秒一层）。所以被点名的这一层里，
+     * 答不上的那台<b>必须</b>当场说一句，服务端收齐弃权就立刻推进下一层。</p>
+     *
+     * <p>负载：{@code entryId}（问的是哪一格）、{@code tier}（弃的是哪一层，必须等于服务端
+     * 当前那一层，否则按过期帧丢弃）、{@code source}/{@code songId}（对号用）、{@code reason}
+     * （{@code no-platform} / {@code not-contributing} / {@code trial-only} / {@code failed}，
+     * 只进日志与聊天提示，服务端不据此分支）。</p>
+     *
+     * <p>老客户端不发：那一层就等满窗口，行为退化成「多等 5 秒」，不会更坏。</p>
+     */
+    public static final String C_URL_DECLINE = "url_decline";
+    /**
+     * {@link #S_SWITCH_RESCUE} 的答卷：把队列里那一格换成<b>另一平台的同一首歌</b>。
+     *
+     * <p>负载 {@code entryId} + {@code track}（形状同 {@link #C_ENQUEUE} 的 {@code track}，
+     * 带着新平台的 {@code source}/{@code songId}，能顺手解出直链就一起带上）。服务端只认
+     * <b>这首歌的点歌人</b>（或管理员）发来的替换，位置、档位与点歌人都保持不变。</p>
+     */
+    public static final String C_TRACK_REPLACE = "track_replace";
 
     // ── S2C ops ──────────────────────────────────────────────────────────────
     public static final String S_HELLO       = "hello";
@@ -238,6 +261,18 @@ public final class Proto {
      * 客户端据此知道「这一首不会有交叠」而不是无限等下去。</p>
      */
     public static final String S_ANALYZE_STATE  = "analyze_state";
+    /**
+     * 整房没人答得上这一首时，单播给<b>点歌人</b>：「你本机能不能换到别的平台的同一首歌」。
+     *
+     * <p>为什么只问点歌人：跨平台换源要搜索、要验证，烧的是执行者自己的上行与第三方额度，
+     * 而这首歌是他点的 —— 由他决定值不值。他不在、没装别的平台、或者换到的版本同样只有
+     * 试听片段，就什么都不发，服务端按原样在总闸到点时跳过。</p>
+     *
+     * <p>负载：{@code entryId} + 原曲目的 {@code source}/{@code songId}/{@code name}/
+     * {@code artist}/{@code duration} + {@code deadlineMs}。客户端认 {@code entryId} 回执
+     * （{@link #C_TRACK_REPLACE}），对不上的帧丢弃。</p>
+     */
+    public static final String S_SWITCH_RESCUE = "switch_rescue";
 
     // ── S2C ops added in v2 ──────────────────────────────────────────────────
     /** 全服在线态列表。 */

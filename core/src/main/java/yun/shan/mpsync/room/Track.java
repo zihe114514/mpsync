@@ -86,9 +86,21 @@ public final class Track {
      * @return true when the URL was adopted
      */
     public boolean adoptUrl(String url, long expiresAt, long servedDurationMs, MpConfig cfg) {
+        return adoptUrl(url, expiresAt, servedDurationMs, cfg, false);
+    }
+
+    /**
+     * @param estimated {@code servedDurationMs} 是不是<b>算出来的</b>而不是测出来的。
+     *                  酷狗（filesize ÷ 档位码率）与 LX 脚本（Content-Length ÷ 声明码率）两条路
+     *                  走的是这一档，阈值放宽到 {@link MpConfig#estimatedStreamDurationRatio} ——
+     *                  拿实测的标准去卡估算值，会把完整版误判成试听片段，代价是整房白等一轮
+     *                  再跳过一首本来能放的歌。
+     */
+    public boolean adoptUrl(String url, long expiresAt, long servedDurationMs, MpConfig cfg,
+                            boolean estimated) {
         boolean ok = url != null && !url.isBlank()
                 && SourceGuard.isAllowedUrl(url, cfg.allowedHosts)
-                && !isTrialClip(servedDurationMs, durationMs, cfg);
+                && !isTrialClip(servedDurationMs, durationMs, cfg, estimated);
         if (ok) {
             this.url = url;
             this.urlDurationMs = servedDurationMs;
@@ -111,8 +123,13 @@ public final class Track {
      * not report {@code urlDuration} must still be able to 点歌.
      */
     public static boolean isTrialClip(long servedMs, long trackMs, MpConfig cfg) {
+        return isTrialClip(servedMs, trackMs, cfg, false);
+    }
+
+    public static boolean isTrialClip(long servedMs, long trackMs, MpConfig cfg, boolean estimated) {
         if (servedMs <= 0L || trackMs <= 0L) return false;
-        return servedMs < trackMs * cfg.minStreamDurationRatio;
+        double ratio = estimated ? cfg.estimatedStreamDurationRatio : cfg.minStreamDurationRatio;
+        return servedMs < trackMs * ratio;
     }
 
     public boolean hasFreshUrl() {
