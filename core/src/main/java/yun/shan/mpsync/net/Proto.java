@@ -220,6 +220,15 @@ public final class Proto {
      * <b>这首歌的点歌人</b>（或管理员）发来的替换，位置、档位与点歌人都保持不变。</p>
      */
     public static final String C_TRACK_REPLACE = "track_replace";
+    /**
+     * {@link #S_SWITCH_RESCUE} 的<b>弃权</b>：「我这台换不到，别等我的窗口，去问下一台」。
+     *
+     * <p>负载 {@code entryId} + {@code reason}（只进日志）。服务端只在「这一格当前派的就是
+     * 发帧的这一台」时才改派，所以迟到的、或者自己压根没被派过的弃权都会被丢掉。</p>
+     *
+     * <p>老客户端不发：那一台等到窗口超时才换下一台，行为只是慢一点，不会更坏。</p>
+     */
+    public static final String C_SWITCH_DECLINE = "switch_decline";
 
     // ── S2C ops ──────────────────────────────────────────────────────────────
     public static final String S_HELLO       = "hello";
@@ -283,8 +292,15 @@ public final class Proto {
      * 试听片段，就什么都不发，服务端按原样在总闸到点时跳过。</p>
      *
      * <p>负载：{@code entryId} + 原曲目的 {@code source}/{@code songId}/{@code name}/
-     * {@code artist}/{@code duration} + {@code deadlineMs}。客户端认 {@code entryId} 回执
-     * （{@link #C_TRACK_REPLACE}），对不上的帧丢弃。</p>
+     * {@code artist}/{@code duration} + {@code attempt}（第几台）+ {@code mine}（这一格是不是
+     * 收帧的人点的）+ {@code deadlineMs}。客户端认 {@code entryId} 回执
+     * （{@link #C_TRACK_REPLACE}），对不上的帧丢弃；换不到就发 {@link #C_SWITCH_DECLINE}，
+     * 服务端立刻改派下一台，不必等满窗口。</p>
+     *
+     * <p><b>收件人不必是点歌人。</b>一次只派一台，派的是「房间里最可能换成功的那台」：
+     * 点歌人的机器先上，其次本机能出完整版的平台多、脚本覆盖渠道多的那台。
+     * 这一手存在的意义就是<b>让 MP 玩家也能借到 Mu 的脚本与跨平台匹配</b> —— MP 自己没有
+     * 这条流水线（{@code switchRescue} 恒为假），只问点歌人的话它在 MP 那一侧永远是死的。</p>
      */
     public static final String S_SWITCH_RESCUE = "switch_rescue";
 

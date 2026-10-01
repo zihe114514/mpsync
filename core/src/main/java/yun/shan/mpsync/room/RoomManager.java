@@ -775,6 +775,9 @@ public final class RoomManager {
             case Proto.C_TRACK_REPLACE -> room.replaceTrack(uuid,
                     Proto.num(msg, "entryId", 0L),
                     Proto.obj(msg, "track"));
+            // 被派去换源的那台说「我这台换不到」：当场改派下一台，不必等满一个救援窗。
+            case Proto.C_SWITCH_DECLINE -> room.switchDecline(uuid,
+                    Proto.num(msg, "entryId", 0L), Proto.str(msg, "reason", ""));
             // 交接计划。服务端只做校验与广播 —— 分析需要音频，只能在客户端做；
             // 但交接点必须全房一致，所以由一台算出、服务端存下并转发。
             // 「哪一台」不再是房主：服务端按「点歌人 → 房主 → 房间里任何能算的人」指派

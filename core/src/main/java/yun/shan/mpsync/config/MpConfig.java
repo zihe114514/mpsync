@@ -128,6 +128,18 @@ public final class MpConfig {
      * 而误判的代价是整房白等一轮再跳过一首本来能放的歌。所以估算只卡明显不对的（默认 50%）。</p>
      */
     public double estimatedStreamDurationRatio = 0.5;
+
+    /**
+     * 派给一台机器跑跨平台匹配的窗口，到点没结果就改派下一台。默认 12 秒。
+     *
+     * <p>比一个层窗长得多是刻意的：这一手要<b>挨个平台搜索 + 打分 + 逐条验证取流</b>，
+     * 参考实现（go-music-dl 的换源漏斗）的墙钟上限就在十秒量级，给 3 秒等于每次都失败。
+     * 一台的窗口也是这一首卡住的时间上限，所以台数（{@link #switchRescueAttempts}）比窗口更好调。</p>
+     */
+    public long switchRescueWindowMs = 12_000L;
+
+    /** 一首歌最多找几台机器替它跑跨平台匹配。默认 3 台。 */
+    public int switchRescueAttempts = 3;
     /** Drop a room once every member has been offline this long. */
     public long emptyRoomGraceMs = 5 * 60 * 1000L;
     /** Allow members without control rights to 点歌. */
@@ -339,6 +351,10 @@ public final class MpConfig {
             // 分层推进要能在总闸里走完几层：一层比总闸还长就等于只有第一层被问过。
             if (cfg.urlTierTimeoutMs > cfg.urlWaitTimeoutMs / 2L)
                 cfg.urlTierTimeoutMs = Math.max(2_000L, cfg.urlWaitTimeoutMs / 2L);
+            if (cfg.switchRescueWindowMs < 1_000L) cfg.switchRescueWindowMs = 1_000L;
+            if (cfg.switchRescueWindowMs > 60_000L) cfg.switchRescueWindowMs = 60_000L;
+            if (cfg.switchRescueAttempts < 1) cfg.switchRescueAttempts = 1;
+            if (cfg.switchRescueAttempts > 5) cfg.switchRescueAttempts = 5;
             if (cfg.estimatedStreamDurationRatio < 0d) cfg.estimatedStreamDurationRatio = 0d;
             // 估算的阈值只许比实测更宽，反过来会让估算值比实测还容易挨拒。
             if (cfg.estimatedStreamDurationRatio > cfg.minStreamDurationRatio)

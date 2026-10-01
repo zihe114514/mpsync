@@ -87,10 +87,42 @@ public final class QueueEntry {
     private final Set<UUID> declined = new LinkedHashSet<>();
     /** 已采纳的答案来自第几层。迟到的<b>更小</b>层号可以覆盖它（见 {@link #canAdoptTier}）。 */
     public volatile int adoptedTier = ADOPTED_NONE;
-    /** 已经向点歌人求过跨平台救援（一首歌只给一次机会，别反复骚扰同一台机器）。 */
-    public volatile boolean rescueAsked;
-    /** 发出救援请求的时刻，超时之后就当它没了。 */
+    /**
+     * 当前正在替这一首跑跨平台匹配的机器；{@code null} = 没派出去（还没轮到、已经放弃、
+     * 或者已经拿到链接）。
+     *
+     * <p>一次只派<b>一台</b>是刻意的：整条流水线是十几秒量级，同时派三台就是三个人一起为
+     * 同一首歌烧搜索额度，而且各自都会交回一条替换 —— 谁的后到谁把这一格再换一遍。</p>
+     */
+    public volatile UUID rescueTarget;
+    /** 派出去的时刻，{@link Room} 据此判超时改派。 */
     public volatile long rescueSince;
+    /** 派过哪些机器，一台一次（反复骚扰同一台既烧额度也未必第二次就成）。 */
+    private final Set<UUID> rescueTried = new LinkedHashSet<>();
+
+    /** 派过的机器名单（快照，供排序时排除与测试断言）。 */
+    public Set<UUID> rescueTried() {
+        synchronized (rescueTried) { return new LinkedHashSet<>(rescueTried); }
+    }
+
+    /** 已经派过几台。 */
+    public int rescueAttempts() {
+        synchronized (rescueTried) { return rescueTried.size(); }
+    }
+
+    /** 把这一首的跨平台匹配派给 {@code uuid}：记进派过名单并起重置窗口表。 */
+    public void openRescue(UUID uuid) {
+        if (uuid == null) return;
+        synchronized (rescueTried) { rescueTried.add(uuid); }
+        rescueTarget = uuid;
+        rescueSince = System.currentTimeMillis();
+    }
+
+    /** 救援收尾：拿到链接、全用完、或者这一格换成了别的曲目都走这里。 */
+    public void closeRescue() {
+        rescueTarget = null;
+        rescueSince = 0L;
+    }
 
     /** 这一层点名过谁（用于「收齐弃权」的判据）。 */
     public Set<UUID> asked() { synchronized (asked) { return new LinkedHashSet<>(asked); } }

@@ -135,8 +135,7 @@ public final class Room {
             ASK_RESOLVABLE = 3, ASK_REQUESTER = 4, ASK_INSTALLED = 5, ASK_EVERYONE = 6;
     /** 最后一个层号 + 1，表示「没有下一层了」。 */
     static final int ASK_NONE = ASK_EVERYONE + 1;
-    /** 救援请求发出去之后给点歌人多久去搜、去验证、去取流。 */
-    private static final long RESCUE_WINDOW_MS = 12_000L;
+    /** 一次救援派单的窗口与台数上限走配置（{@code switchRescueWindowMs} / {@code switchRescueAttempts}）。 */
 
     private int tickCounter;
     private long lastRefreshAsk;
@@ -1290,6 +1289,14 @@ public final class Room {
      * @param quiet 播放未中断时的预解析／续签走 true —— 不发聊天提示，因为并没有卡住
      */
     private void requestUrl(QueueEntry entry, boolean quiet) {
+        // 这一格手里已经有可用的直链就什么都别做。两个来源会走到这里：链接是点歌人自己
+        // 带上来的，以及**换平台的替换帧带着一条验证过的** —— 后者要是还往下走，全房就会
+        // 对着一首立刻能放的歌重新问六层，而没人知道该答什么（链接已经有了）。
+        // 抽在服主 Token 上的那一发也省掉：它同样只在「没链」时才该花。
+        if (entry.track.hasFreshUrl()) {
+            if (entry == current && waitingUrl) resumeWithFreshUrl();
+            return;
+        }
         String source = entry.track.source;
 
         // ① 服主配置了这个平台的 Token 时，先让服务端自己去解析。这条路对玩家零成本：
@@ -1313,10 +1320,28 @@ public final class Room {
     }
 
     /**
+     * 房间挂在一首<b>已经有可用直链</b>的曲目上等链接 —— 把时钟接回去并广播起播。
+     *
+     * <p>起播口径与「采纳到一条应答」那一处完全一致：重开时钟基准、序号 +1、让出命令静默窗，
+     * 然后 play + queue 各广播一次。少发一发 play，客户端那边就一直停在「等地址」，
+     * 明明能放也不出声。</p>
+     */
+    private void resumeWithFreshUrl() {
+        waitingUrl = false;
+        playing = true;
+        startEpoch = System.currentTimeMillis() - pausedPos;
+        seq++;
+        markCommand();
+        broadcastPlay();
+        broadcastQueue();
+    }
+
+    /**
      * 从 {@code from} 层起往下找第一个<b>还有点名人可问</b>的层，把 {@code url_needed} 只发给
      * 那一层新增的人，并起这一层的窗口表。一层人都没有就继续往下，全层走完则求一次跨平台救援。
      */
     private void advanceAsk(QueueEntry entry, int from, boolean quiet) {
+        if (entry.track.hasFreshUrl()) { entry.closeAsk(); return; }   // 同上：有了就别问了
         String source = entry.track.source;
         // 曲目压根没有链接 = 点歌人刚刚已经试过并且失败了（非会员只解到试听片段时客户端会沉默）。
         // 这种情况下把他排到「装了该平台」之后，省掉一次注定无用的往返。
@@ -1348,7 +1373,7 @@ public final class Room {
             return;
         }
         entry.closeAsk();
-        askRescue(entry);
+        dispatchRescue(entry);
     }
 
     /** 这一层该问谁：在线 + 档案判据 + 没在前面的层里答过或弃权过。 */
@@ -1415,28 +1440,35 @@ public final class Room {
     }
 
     /**
-     * 全层落空：给点歌人一次「换到别的平台的同一首歌」的机会。
+     * 全层落空：找<b>一台有跨平台匹配流水线的机器</b>替这一首换到别的平台的同一首歌。
      *
-     * <p>只单播给他，不广播：跨平台换源要搜索、要验证，烧的是执行者自己的上行与第三方额度，
-     * 而这首歌是他点的 —— 由他决定值不值。他没在线、已经问过、或者压根没报过救援能力，
-     * 就直接放弃这一层链，让总闸到点跳过。</p>
+     * <p>派单而不是只问点歌人，是因为最可能换成功的那台常常不是他：MP 玩家点的歌，MP 自己
+     * 既没有 LX 脚本也没有跨平台搜索，能救它的只有同房那台装了脚本的 Mu。反过来 Mu 玩家点歌时
+     * 本机已经先跑过一遍（见客户端的点歌路径），落到这里说明本机换不到，再问别人一次正好接上。</p>
      *
-     * <p><b>能力位这一道闸是必须的</b>：没有跨平台流水线的客户端（modernMP 只有各平台自己的
-     * 解析链路）收到这一句只能沉默，而服务端为了等它得把总闸再放宽一个救援窗 ——
-     * 白等 12 秒换不来任何一次可播的机会，比改造前更坏。所以 {@code switchRescue} 为假的人
-     * 压根收不到这一句，总闸也不延长。</p>
+     * <p>只派给自报 {@code switchRescue} 的成员：没有这条流水线的机器收到派单只能沉默，而服务端
+     * 为等它要把总闸再放宽一个救援窗 —— 白等十几秒换不来任何一次可播的机会，比改造前更坏。</p>
+     *
+     * <p>一次一台、一台一窗：执行者可能正好断线、可能本机换源开关关着、也可能真的搜不到。
+     * 它当场说换不到（{@code switch_decline}）或者窗口走完，就换下一台，最多
+     * {@code switchRescueAttempts} 台；全用完就放弃这一首，让总闸到点跳过。</p>
      */
-    private void askRescue(QueueEntry entry) {
-        if (entry.rescueAsked || entry.requester == null) return;
-        Member m = members.get(entry.requester);
-        if (m == null || !m.online) return;
-        if (presence == null || !presence.canSwitchRescue(m.uuid)) return;
-        entry.rescueAsked = true;
-        entry.rescueSince = System.currentTimeMillis();
-        // 救援要的时间得另外给：分层把总闸的预算花光之后才轮到它，不另给的话总闸会在
-        // 这一句刚问出去时就跳歌，那一手永远来不及答。一首曲子只救援一次（rescueAsked），
-        // 所以「这一首最多卡多久」的上限就是抬高一个救援窗，不会滚成无限等。
-        if (waitingUrl) waitingSince += RESCUE_WINDOW_MS;
+    private void dispatchRescue(QueueEntry entry) {
+        int tried = entry.rescueAttempts();
+        UUID next = pickRescueExecutor(entry);
+        if (next == null) {
+            entry.closeRescue();
+            if (tried == 0) return;   // 一台都没派出去过，别播多余的提示
+            notice("问过了 " + tried + " 台机器，都没能替《" + entry.track.name
+                    + "》找到别的平台的可播版本");
+            return;
+        }
+        long window = Math.max(250L, cfg.switchRescueWindowMs);
+        entry.openRescue(next);
+        // 救援要的时间得另外给：分层把总闸的预算花光之后才轮到它，不另给的话总闸会在这一句
+        // 刚派出去时就跳歌，那一手永远来不及答。卡住的上限就是「派出去的台数 × 一个窗口」，
+        // 而台数有配置封顶，所以这一句不会把一首歌拖成无限等。
+        if (waitingUrl) waitingSince += window;
         JsonObject msg = Proto.msg(Proto.S_SWITCH_RESCUE);
         msg.addProperty("entryId", entry.entryId);
         msg.addProperty("source", entry.track.source);
@@ -1444,9 +1476,74 @@ public final class Room {
         msg.addProperty("name", entry.track.name);
         msg.addProperty("artist", entry.track.artist);
         msg.addProperty("duration", entry.track.durationMs);
-        msg.addProperty("deadlineMs", System.currentTimeMillis() + RESCUE_WINDOW_MS);
-        send(m.uuid, msg);
-        notice("房间里没人能放《" + entry.track.name + "》，正在问点歌人换别的平台版本…");
+        msg.addProperty("attempt", entry.rescueAttempts());
+        // 收件人不必是点歌人，所以这一位要单独给：客户端拿它决定提示文案（「我点的歌」与
+        // 「替别人换一首」是两件事，烧的是自己的额度时更该说清）。
+        msg.addProperty("mine", entry.requester != null && entry.requester.equals(next));
+        msg.addProperty("deadlineMs", System.currentTimeMillis() + window);
+        send(next, msg);
+        Member m = members.get(next);
+        notice("房间里没人能放《" + entry.track.name + "》，正在问"
+                + (m == null ? "别的成员" : m.name) + "换别的平台版本…");
+    }
+
+    /** 下一个该派谁：在线 + 有流水线 + 还没派过，按命中率择优。都没有返回 null。 */
+    private UUID pickRescueExecutor(QueueEntry entry) {
+        PresenceRegistry pr = presence;
+        if (pr == null) return null;
+        // 台数上限是「一首歌最多卡多久」的那道闸：卡住的时间 = 派出的台数 × 一个窗口，
+        // 而窗口和台数都来自配置。没有这一句的话，房间里装了五台 Mu 就会问满五轮，
+        // 配置项 switchRescueAttempts 形同不存在。
+        if (entry.rescueAttempts() >= Math.max(1, cfg.switchRescueAttempts)) return null;
+        java.util.Set<UUID> tried = entry.rescueTried();
+        List<Member> cands = new ArrayList<>();
+        for (Member m : members.values()) {
+            if (!m.online || !pr.canSwitchRescue(m.uuid) || tried.contains(m.uuid)) continue;
+            cands.add(m);
+        }
+        if (cands.isEmpty()) return null;
+        UUID requester = entry.requester;
+        // List.sort 是稳定的：分数全等的成员仍然按加入顺序，不引入新的不确定。
+        cands.sort((a, b) -> Integer.compare(rescueScore(b, requester, pr), rescueScore(a, requester, pr)));
+        return cands.get(0).uuid;
+    }
+
+    /**
+     * 派单权重：<b>点歌人自己的机器先上</b>（他最清楚自己要听哪一首，也最不烧别人额度），
+     * 其次比「本机能出完整版的平台数」—— 跨平台匹配要挨个平台搜索，够得着的平台越多越可能命中，
+     * 再比 LX 脚本覆盖的渠道数。数量级差得开，就不必再往下堆判据。
+     */
+    private static int rescueScore(Member m, UUID requester, PresenceRegistry pr) {
+        int mine = m.uuid.equals(requester) ? 1 << 20 : 0;
+        return mine + pr.resolvableCount(m.uuid) * 16 + pr.lxChannelCount(m.uuid);
+    }
+
+    /** 执行者当场说换不到：立刻改派下一台，别干等一个窗口。 */
+    public void switchDecline(UUID uuid, long entryId, String reason) {
+        if (entryId <= 0L) return;
+        QueueEntry entry = entryOf(entryId, "");
+        if (entry == null || !uuid.equals(entry.rescueTarget)) return;   // 不是当前那台：过期帧丢掉
+        Member m = members.get(uuid);
+        String why = reason == null || reason.isBlank() ? "未说明" : reason.trim();
+        System.out.println("[mpsync] 换源弃权 entry=" + entryId + " by="
+                + (m == null ? "?" : m.name) + " 原因=" + why);
+        dispatchRescue(entry);
+    }
+
+    /** 派出去的救援超时：换下一台。 */
+    private void tickRescues(long now) {
+        if (current != null) tickOneRescue(current, now);
+        for (QueueEntry e : queue) tickOneRescue(e, now);
+    }
+
+    private void tickOneRescue(QueueEntry entry, long now) {
+        UUID target = entry.rescueTarget;
+        if (target == null) return;
+        if (entry.track.hasFreshUrl()) { entry.closeRescue(); return; }
+        if (now - entry.rescueSince <= Math.max(250L, cfg.switchRescueWindowMs)) return;
+        Member m = members.get(target);
+        notice("没等到" + (m == null ? "那台机器" : m.name) + "的换源结果，再问下一台…");
+        dispatchRescue(entry);
     }
 
     /** 收一条弃权。层号对不上就当过期帧丢弃 —— 迟到的弃权会把还没问到的层提前推完。 */
@@ -1479,23 +1576,37 @@ public final class Room {
     public String replaceTrack(UUID uuid, long entryId, JsonObject track) {
         QueueEntry entry = entryId == 0L ? null : entryOf(entryId, "");
         if (entry == null) return "这首歌已经不在队列里了";
-        if (entry.requester != null && !entry.requester.equals(uuid) && !controls(uuid))
-            return "只有点歌人能替换这首歌的平台版本";
+        // 点歌人、管理员，以及**服务端此刻派出去换源的那一台**，三种身份才允许替换：
+        // 被派者的答卷就是要改掉自己那一份的曲目，判权必须跟着派单走，否则「让别人替 MP 换平台」
+        // 这一手在协议上根本走不通。
+        if (!uuid.equals(entry.rescueTarget)
+                && (entry.requester == null || !entry.requester.equals(uuid)) && !controls(uuid))
+            return "只有点歌人、管理员，或被派去换源的那台机器能替换这首歌";
         Track next = Track.fromJson(track, cfg);
         if (next == null) return "换源结果缺少曲目 ID";
         if (next.key().equals(entry.track.key())) return null;   // 同一平台同一首，什么都没换
         entry.track = next;
         entry.adoptedTier = QueueEntry.ADOPTED_NONE;
         entry.closeAsk();
+        // 换完平台，挂在这一格上的派单就作废了：旧那台的答卷迟到时对不上新的身份，
+        // 而它也已经不在 rescueTarget 上，switchDecline / track_replace 都会被丢掉。
+        entry.closeRescue();
         entry.clearDeclined();
-        notice("《" + entry.track.name + "》换到 " + next.source + " 版本，重新获取播放地址…");
         if (current == entry) {
-            playing = false;
-            waitingUrl = true;
-            waitingSince = System.currentTimeMillis();
-            requestUrl(entry);
-            broadcastState();
+            if (next.hasFreshUrl()) {
+                // 换到的那一手带着可用直链，这就是全房在等的那条链 —— 直接续上时钟起播。
+                notice("《" + entry.track.name + "》换到 " + next.source + " 版本，继续播放…");
+                resumeWithFreshUrl();
+            } else {
+                notice("《" + entry.track.name + "》换到 " + next.source + " 版本，重新获取播放地址…");
+                playing = false;
+                waitingUrl = true;
+                waitingSince = System.currentTimeMillis();
+                requestUrl(entry);
+                broadcastState();
+            }
         } else {
+            notice("《" + entry.track.name + "》换到 " + next.source + " 版本，按新平台重新获取播放地址…");
             requestUrl(entry, true);
             broadcastQueue();
         }
@@ -1585,6 +1696,7 @@ public final class Room {
             if (!hit.track.adoptUrl(url, expiresAt, servedDurationMs, cfg, estimated)) return;
             hit.adoptedTier = tier;
             hit.closeAsk();
+            hit.closeRescue();      // 链接到手，别再等那台正在搜索的机器
             if (hit.track.hasFreshUrl() && wasStalled) {
                 // The room was holding for this URL: start the clock and push play.
                 waitingUrl = false;
@@ -1607,6 +1719,7 @@ public final class Room {
         if (!hit.track.adoptUrl(url, expiresAt, servedDurationMs, cfg, estimated)) return;
         hit.adoptedTier = tier;
         hit.closeAsk();
+        hit.closeRescue();          // 链接到手，别再等那台正在搜索的机器
         broadcastQueue();
     }
 
@@ -2006,6 +2119,9 @@ public final class Room {
         // 排在总闸（上面那段）之后，所以总闸永远优先 —— 最坏情况是只问了几层就被跳过，
         // 而不是分层把「这首歌到底放不放」这件事拖到无限久。
         tickUrlTiers(now);
+        // 派单超时改派排在分层之后：同一 tick 里分层先走完最后一层，救援才有机会接上；
+        // 而它两样都不会把已经拿到链接的这一格再动一次（两个 tick 都先判 hasFreshUrl）。
+        tickRescues(now);
 
         // 分析者的指派与超时改派。**必须排在换歌判断之前**：一首曲子临到交接点时下面那一句会
         // 直接 next(true) 返回，改派就永远轮不到 —— 而那恰恰是最需要补救的时刻（真正能算的那台

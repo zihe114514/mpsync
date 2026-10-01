@@ -171,6 +171,15 @@ public final class ClientProfile {
      */
     public int lxChannelCount() { return viaLxSources.size(); }
 
+    /**
+     * 本机现在能出<b>完整版</b>的平台数（{@code resolvable} 的大小）。
+     *
+     * <p>跨平台匹配是一台机器挨个平台去搜索，够得着的平台越多越可能命中，所以这一位就是
+     * 派单的首要权重。没报过新数组的人（老客户端）这里是 0 —— 它们也没有那条流水线，
+     * 本来就进不了候选表。</p>
+     */
+    public int resolvableCount() { return resolvableSources.size(); }
+
     /** 「贡献 LX」档：愿意用 LX 脚本替房间解歌，且该平台确实只有靠 LX 才解得出。 */
     public boolean contributesLx(String source) {
         if (!contributeLx || source == null) return false;

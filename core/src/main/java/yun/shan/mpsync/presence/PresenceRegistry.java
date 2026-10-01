@@ -99,6 +99,12 @@ public final class PresenceRegistry {
      * <p>没有的人收不到 {@code switch_rescue}：那一句要它跑一条压根不存在的流水线，
      * 而服务端还得为它把总闸多留一个救援窗 —— 白等 12 秒换不来任何一次可播的机会。</p>
      */
+    /** 这台机器能出完整版的平台数，用于跨平台匹配的派单排序。 */
+    public int resolvableCount(UUID uuid) {
+        ClientProfile p = get(uuid);
+        return p == null ? 0 : p.resolvableCount();
+    }
+
     public boolean canSwitchRescue(UUID uuid) {
         ClientProfile p = get(uuid);
         return p != null && p.switchRescue;
