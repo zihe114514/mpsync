@@ -1356,9 +1356,15 @@ public final class Room {
             }
             case ASK_CONTRIBUTED_LX -> {
                 if (!contributors) return out;
+                List<Member> cands = new ArrayList<>();
                 for (Member m : members.values())
                     if (m.online && pr.contributesLx(m.uuid, source) && !entry.spoken(m.uuid))
-                        out.add(m.uuid);
+                        cands.add(m);
+                // 一个脚本常常同时吃下五六个渠道，两个人各挂一个脚本时先问谁不该由进房先后决定：
+                // 覆盖渠道多的那台更可能答上，也更可能答上后面的每一首。List.sort 是稳定的，
+                // 渠道数相同的两个人仍然按加入顺序，不引入新的不确定。
+                cands.sort((a, b) -> Integer.compare(pr.lxChannelCount(b.uuid), pr.lxChannelCount(a.uuid)));
+                for (Member m : cands) out.add(m.uuid);
             }
             case ASK_RESOLVABLE -> {
                 if (!contributors) return out;

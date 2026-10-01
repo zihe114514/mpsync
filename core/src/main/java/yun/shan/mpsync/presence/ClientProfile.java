@@ -148,6 +148,15 @@ public final class ClientProfile {
         return memberSources.contains(source.trim().toLowerCase(Locale.ROOT));
     }
 
+    /**
+     * 这台机器靠 LX 脚本覆盖<b>几个平台</b>。
+     *
+     * <p>一个脚本通常同时声明 wy/tx/kg/kw/mg 好几路，而 {@code viaLx} 是按平台令牌逐个记的
+     * （客户端那边 {@code lxCovers(platform)} 一条一条判过），所以这个数就是「他那个脚本能吃下
+     * 几个渠道」。分层里拿它排序：渠道多的那台更可能答上，也更可能答上<b>之后</b>的每一首。</p>
+     */
+    public int lxChannelCount() { return viaLxSources.size(); }
+
     /** 「贡献 LX」档：愿意用 LX 脚本替房间解歌，且该平台确实只有靠 LX 才解得出。 */
     public boolean contributesLx(String source) {
         if (!contributeLx || source == null) return false;

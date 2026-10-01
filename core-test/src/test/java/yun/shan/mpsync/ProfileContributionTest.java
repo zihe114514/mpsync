@@ -273,6 +273,27 @@ class ProfileContributionTest {
     }
 
     @Test
+    void theLxTierPrefersTheWiderScriptRegardlessOfJoinOrder() {
+        // 单输入框架：一个脚本常常同时吃下几个渠道，两个人各挂一个脚本时
+        // 先问谁不该由进房先后决定。多渠道那台后进来，仍然该第一个被问。
+        UUID narrow = inRoom("单渠道");
+        UUID wide = inRoom("多渠道");
+        update(narrow, "vip", arr(), "contributeVip", false,
+                "member", arr(), "resolvable", arr("netease"), "viaLx", arr("netease"),
+                "contributeLx", true);
+        update(wide, "vip", arr(), "contributeVip", false,
+                "member", arr(), "resolvable", arr("netease", "qq", "kugou"),
+                "viaLx", arr("netease", "qq", "kugou"), "contributeLx", true);
+        tiersNeverExpire();
+        host.clear();
+
+        // 两个人都不是真会员：第一层没人，首发直接落在「贡献 LX」那一层。
+        room.enqueue(owner, "房主", urlless("9"), false);
+        assertEquals(List.of(wide, narrow), asked(),
+                "同一层内先问覆盖渠道多的那台，而不是先进房的那台");
+    }
+
+    @Test
     void aDeclineMovesToTheNextTierWithoutWaitingForTheWindow() {
         UUID lxGuy = inRoom("LX党");
         UUID vipGuy = inRoom("真会员");

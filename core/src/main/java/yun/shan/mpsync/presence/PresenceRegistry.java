@@ -69,6 +69,12 @@ public final class PresenceRegistry {
         return p != null && p.contributesLx(source);
     }
 
+    /** 这台机器的脚本覆盖几个渠道；没报过档案就是 0。用于给「贡献 LX」那一层内部排序。 */
+    public int lxChannelCount(UUID uuid) {
+        ClientProfile p = get(uuid);
+        return p == null ? 0 : p.lxChannelCount();
+    }
+
     /**
      * 这个平台上是<b>真会员</b>（客户端报的 {@code member} 数组里有）。
      *
