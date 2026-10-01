@@ -70,12 +70,15 @@ public final class Track {
         t.durationMs = Math.max(0L, Proto.num(o, "duration", 0L));
         String url = Proto.str(o, "url", "");
         long served = Proto.num(o, "urlDuration", 0L);
-        if (!url.isBlank() && isTrialClip(served, t.durationMs, cfg)) {
+        // 点歌人自己上传的那条链同样可能是「算出来的」长度（酷狗 / LX 一路），判据必须与
+        // 代解析那一路一致，否则同一台机器解析出的链接，走两条路会得到两种结论。
+        boolean estimated = Proto.bool(o, "urlDurationEstimated", false);
+        if (!url.isBlank() && isTrialClip(served, t.durationMs, cfg, estimated)) {
             // One resolved link is shared with the whole room, so a trial clip resolved by
             // a non-VIP account would truncate the song for everyone.
             throw new IllegalArgumentException("该歌曲解析到的只是试听片段（需要 VIP），已拒绝");
         }
-        t.adoptUrl(url, Proto.num(o, "urlExpiresAt", 0L), served, cfg);
+        t.adoptUrl(url, Proto.num(o, "urlExpiresAt", 0L), served, cfg, estimated);
         return t;
     }
 
@@ -91,8 +94,9 @@ public final class Track {
 
     /**
      * @param estimated {@code servedDurationMs} 是不是<b>算出来的</b>而不是测出来的。
-     *                  酷狗（filesize ÷ 档位码率）与 LX 脚本（Content-Length ÷ 声明码率）两条路
-     *                  走的是这一档，阈值放宽到 {@link MpConfig#estimatedStreamDurationRatio} ——
+     *                  酷狗 / QQ / LX 脚本这几路都不报「这条链接实际服务了多长」，客户端只能拿
+     *                  HEAD 的字节数除以声明码率估一个数，走的是这一档，阈值放宽到
+     *                  {@link MpConfig#estimatedStreamDurationRatio} ——
      *                  拿实测的标准去卡估算值，会把完整版误判成试听片段，代价是整房白等一轮
      *                  再跳过一首本来能放的歌。
      */

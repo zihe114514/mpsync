@@ -1326,16 +1326,25 @@ public final class Room {
             if (targets.isEmpty()) continue;
             for (UUID uuid : targets) entry.markAsked(uuid);
             entry.openTier(tier, targets);
-            JsonObject m = Proto.msg(Proto.S_URL_NEEDED);
+            JsonObject base = Proto.msg(Proto.S_URL_NEEDED);
             // source：客户端据此决定用哪个平台的会话去解，也用来确认这条应答是给这首歌的。
-            m.addProperty("source", source);
-            m.addProperty("songId", entry.track.songId);
-            m.addProperty("name", entry.track.name);
-            // 新三个字段。老客户端三个都不读，行为与改动前一致（只是服务端等满窗口才推进）。
-            m.addProperty("entryId", entry.entryId);
-            m.addProperty("tier", tier);
-            m.addProperty("deadlineMs", System.currentTimeMillis() + tierWindowMs(tier));
-            for (UUID uuid : targets) send(uuid, m);
+            base.addProperty("source", source);
+            base.addProperty("songId", entry.track.songId);
+            base.addProperty("name", entry.track.name);
+            // 新四个字段。老客户端一个都不读，行为与改动前一致（只是服务端等满窗口才推进）。
+            base.addProperty("entryId", entry.entryId);
+            base.addProperty("tier", tier);
+            long deadline = System.currentTimeMillis() + tierWindowMs(tier);
+            base.addProperty("deadlineMs", deadline);
+            for (UUID uuid : targets) {
+                JsonObject m = base.deepCopy();
+                // 「这一格是不是你点的」。客户端只有知道这一点，才敢在答不上时顺手换平台：
+                // {@code track_replace} 的判权是点歌人或管理员，别人换过去只会吃一句拒绝，
+                // 而那次跨平台搜索烧的是他自己的额度 —— 所以这一位必须由服务端说清楚，
+                // 不能让客户端拿昵称去猜（房间里两个同名的点是恒有的事）。
+                m.addProperty("mine", entry.requester != null && entry.requester.equals(uuid));
+                send(uuid, m);
+            }
             return;
         }
         entry.closeAsk();
@@ -1398,7 +1407,8 @@ public final class Room {
      * <p>最后一层<b>也</b>只等一个层窗口，而不是把总闸 {@link MpConfig#urlWaitTimeoutMs} 剩下的
      * 时间全吃掉 —— 曾经就是这么写的，于是「全层落空 → 向点歌人求跨平台救援」那一步永远走不到：
      * 总闸到点时 tick 先判等链超时、直接跳过这首歌并 return，分层再也没机会推进到救援那一手。
-     * 现在六层各等 3 秒，18 秒走完，剩下的预算才留给救援。</p>
+     * 现在六层各等一个层窗（默认 3 秒）走完，剩下的预算与另外批给救援的那一窗（见
+     * {@link #askRescue}）合起来才够救援跑一条流水线。</p>
      */
     private long tierWindowMs(int tier) {
         return cfg.urlTierTimeoutMs;
@@ -1408,15 +1418,25 @@ public final class Room {
      * 全层落空：给点歌人一次「换到别的平台的同一首歌」的机会。
      *
      * <p>只单播给他，不广播：跨平台换源要搜索、要验证，烧的是执行者自己的上行与第三方额度，
-     * 而这首歌是他点的 —— 由他决定值不值。他没在线、已经问过、或者压根没配救援能力，就直接
-     * 放弃这一层链，让总闸到点跳过。</p>
+     * 而这首歌是他点的 —— 由他决定值不值。他没在线、已经问过、或者压根没报过救援能力，
+     * 就直接放弃这一层链，让总闸到点跳过。</p>
+     *
+     * <p><b>能力位这一道闸是必须的</b>：没有跨平台流水线的客户端（modernMP 只有各平台自己的
+     * 解析链路）收到这一句只能沉默，而服务端为了等它得把总闸再放宽一个救援窗 ——
+     * 白等 12 秒换不来任何一次可播的机会，比改造前更坏。所以 {@code switchRescue} 为假的人
+     * 压根收不到这一句，总闸也不延长。</p>
      */
     private void askRescue(QueueEntry entry) {
         if (entry.rescueAsked || entry.requester == null) return;
         Member m = members.get(entry.requester);
         if (m == null || !m.online) return;
+        if (presence == null || !presence.canSwitchRescue(m.uuid)) return;
         entry.rescueAsked = true;
         entry.rescueSince = System.currentTimeMillis();
+        // 救援要的时间得另外给：分层把总闸的预算花光之后才轮到它，不另给的话总闸会在
+        // 这一句刚问出去时就跳歌，那一手永远来不及答。一首曲子只救援一次（rescueAsked），
+        // 所以「这一首最多卡多久」的上限就是抬高一个救援窗，不会滚成无限等。
+        if (waitingUrl) waitingSince += RESCUE_WINDOW_MS;
         JsonObject msg = Proto.msg(Proto.S_SWITCH_RESCUE);
         msg.addProperty("entryId", entry.entryId);
         msg.addProperty("source", entry.track.source);

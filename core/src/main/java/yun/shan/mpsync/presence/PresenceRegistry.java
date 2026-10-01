@@ -94,6 +94,17 @@ public final class PresenceRegistry {
     }
 
     /**
+     * 这台客户端有没有跨平台换源那套流水线（{@code switchRescue}）。
+     *
+     * <p>没有的人收不到 {@code switch_rescue}：那一句要它跑一条压根不存在的流水线，
+     * 而服务端还得为它把总闸多留一个救援窗 —— 白等 12 秒换不来任何一次可播的机会。</p>
+     */
+    public boolean canSwitchRescue(UUID uuid) {
+        ClientProfile p = get(uuid);
+        return p != null && p.switchRescue;
+    }
+
+    /**
      * 全服在线态快照。
      *
      * @param roomLabel 玩家所在房间的名字（不在房间里给空串）——由调用方从 RoomManager 查，

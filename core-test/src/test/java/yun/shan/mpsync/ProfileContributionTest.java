@@ -239,6 +239,9 @@ class ProfileContributionTest {
         // 但走 contributesVip 的退化判据落在第 3 层 —— 位置与改动前对它的待遇一致。
         UUID legacyGuy = inRoom("老客户端");
         update(legacyGuy, "vip", arr("netease"), "contributeVip", true);
+        // 点歌人要得到救援帧，必须先报过「本机有跨平台换源那条流水线」；这里给他这一位，
+        // 让「分层走完 → 救援」这一段还能被验到（另一条测试专门钉没报的人收不到）。
+        update(owner, "switchRescue", true);
         tiersExpireInstantly();
         host.clear();
 
@@ -270,6 +273,33 @@ class ProfileContributionTest {
         host.clear();
         tickTiers();
         assertTrue(rescues().isEmpty(), "救援也是一次性的");
+    }
+
+    @Test
+    void rescueIsNotAskedOfClientsWithoutTheCrossSourcePipeline() {
+        // modernMP 与所有老版本客户端都没有跨平台换源那套代码。给它们发救援帧不是「多一次机会」，
+        // 而是服务端替这一首把总闸多放宽一个救援窗，然后什么都收不到 —— 比改造前更坏。
+        UUID guy = inRoom("只解析不换源");
+        update(guy, "vip", arr("netease"), "contributeVip", true,
+                "member", arr("netease"), "resolvable", arr("netease"), "viaLx", arr());
+        tiersExpireInstantly();
+        assertFalse(pr.canSwitchRescue(owner), "没报过这一位的默认就是「没有这条流水线」");
+        host.clear();
+
+        // 点歌人自己就是那台没报 switchRescue 的机器：分层走完也不该问它。
+        room.enqueue(owner, "房主", urlless("9"), false);
+        for (int i = 0; i < 10; i++) tickTiers();
+        assertTrue(rescues().isEmpty(), "能力位为假的人收不到救援帧");
+
+        // 报上这一位之后，下一首才轮得到救援 —— 判据来自档案，不是猜客户端牌子。
+        update(owner, "switchRescue", true);
+        assertTrue(pr.canSwitchRescue(owner));
+        host.clear();
+        room.enqueue(owner, "房主", urlless("10"), false);
+        long queued = room.queue().isEmpty() ? room.current().entryId : room.queue().get(0).entryId;
+        for (int i = 0; i < 10; i++) tickTiers();
+        assertEquals(List.of(owner + ":" + queued), rescues(),
+                "报了能力的点歌人才收到那一次跨平台救援");
     }
 
     @Test

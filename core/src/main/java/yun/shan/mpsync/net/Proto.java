@@ -199,15 +199,17 @@ public final class Proto {
      * 对 {@link #S_URL_NEEDED} 的<b>弃权</b>：「这一层我不答，别再等我了」。
      *
      * <p>沉默不是弃权的替代物。老规矩是「解不出就闭嘴」，那对<b>并行竞速</b>是对的 —— 反正没人等；
-     * 改成按层串行之后，闭嘴等于让整房白等一个窗口（默认 5 秒一层）。所以被点名的这一层里，
-     * 答不上的那台<b>必须</b>当场说一句，服务端收齐弃权就立刻推进下一层。</p>
+     * 改成按层串行之后，闭嘴等于让整房白等一个窗口（{@code urlTierTimeoutMs}，默认 3 秒一层）。
+     * 所以被点名的这一层里，答不上的那台<b>必须</b>当场说一句，服务端收齐弃权就立刻推进下一层。</p>
      *
      * <p>负载：{@code entryId}（问的是哪一格）、{@code tier}（弃的是哪一层，必须等于服务端
      * 当前那一层，否则按过期帧丢弃）、{@code source}/{@code songId}（对号用）、{@code reason}
-     * （{@code no-platform} / {@code not-contributing} / {@code trial-only} / {@code failed}，
+     * （一句为什么，形如 {@code no-platform} / {@code lx-off} / {@code lx-tx-failed} /
+     * {@code netease-trial} / {@code no-rescue}；带渠道键是因为一份脚本常常五个渠道，
+     * 光说「lx 失败」看不出是这台压根没这个渠道还是渠道当场死了。
      * 只进日志与聊天提示，服务端不据此分支）。</p>
      *
-     * <p>老客户端不发：那一层就等满窗口，行为退化成「多等 5 秒」，不会更坏。</p>
+     * <p>老客户端不发：那一层就等满窗口，行为退化成「多等一个层窗口」，不会更坏。</p>
      */
     public static final String C_URL_DECLINE = "url_decline";
     /**
@@ -234,6 +236,18 @@ public final class Proto {
     public static final String S_LEFT        = "left";
     public static final String S_NOTICE      = "notice";
     public static final String S_ERROR       = "error";
+    /**
+     * 向一台客户端重新要这条曲目的直链（分层串行，见 {@code Room#advanceAsk}）。
+     *
+     * <p>负载：{@code source}/{@code songId}/{@code name}（要解的是哪一首）、
+     * {@code entryId}（队列里那一格，应答原样带回）、{@code tier}（服务端当前在问第几层）、
+     * {@code deadlineMs}（这一层什么时候换人，客户端用它决定「还来不来得及跑一条慢链路」）、
+     * {@code mine}（这一格是不是收帧的人点的 —— 只有点歌人和管理员发 {@link #C_TRACK_REPLACE}
+     * 不会被拒，所以救援只在 {@code mine} 为真时才值得跑一次跨平台搜索）。</p>
+     *
+     * <p>三个新字段与 {@code mine} 都是追加式的：老客户端一个都不读，照样按 {@code source}
+     * +{@code songId} 应答，只是服务端要等满窗口才知道这一层没人答。</p>
+     */
     public static final String S_URL_NEEDED  = "url_needed";   // ask a client to re-resolve a stream URL
     /**
      * 指派一台客户端去算这一首的交接计划。

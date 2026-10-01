@@ -92,6 +92,20 @@ public final class ClientProfile {
     public boolean automixCapable;
 
     /**
+     * 这台客户端<b>有没有</b>跨平台换源那套流水线（报文里的 {@code switchRescue}）。
+     *
+     * <p>全层落空之后服务端会单播问点歌人「能不能换到别的平台的同一首歌」，那一次要跑十几秒的
+     * 搜索与验证，而且服务端为此得把总闸再放宽一个救援窗。对根本没有这条流水线的客户端
+     * （modernMP 只有各平台自己的解析链路，没有跨平台匹配）发这一句，结果是<b>纯亏</b>：
+     * 它什么都答不上，那一首却要多卡 12 秒才被跳过。</p>
+     *
+     * <p>所以这一位由客户端自报，为 false（含老客户端不发）时服务端压根不问这一手，
+     * 总闸也不延长 —— 与改造前逐字一致。真正的执行判据（换源开关开没开、有没有够得着的候选平台）
+     * 仍在客户端手里，它跑不动就什么都不发。</p>
+     */
+    public boolean switchRescue;
+
+    /**
      * 分析能力档位：{@code model} = 装了模型（Folia 推理，算得出 stem 交接、过渡族、频段倾斜）；
      * {@code dsp} = 只有内置信号处理；空串 = 不能分析。
      *
@@ -215,6 +229,9 @@ public final class ClientProfile {
         // 房间交接计划的分析能力。老客户端不发这两项，于是 automixCapable 保持上次的值
         // （默认 false）—— 它们不会被指派，房间照常按「没人算得出」处理。
         if (o.has("automixCapable")) automixCapable = Proto.bool(o, "automixCapable", automixCapable);
+        // 跨平台救援同理：不发这一位的客户端（含全部老版本与 modernMP）永远收不到救援帧，
+        // 服务端也不为它把总闸放宽 —— 保持改造前的跳过时机。
+        if (o.has("switchRescue")) switchRescue = Proto.bool(o, "switchRescue", switchRescue);
         if (o.has("automixEngine")) {
             String engine = Proto.str(o, "automixEngine", "");
             automixEngine = engine == null ? "" : engine.trim().toLowerCase(Locale.ROOT);
