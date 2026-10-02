@@ -103,7 +103,11 @@ public final class ServerResolver {
             } catch (Throwable ignored) {
                 // 解析失败不是错误：房间照旧会去问客户端。
             } finally {
-                inFlight.remove(key);
+                // 只清自己放的那一笔：若本次解析耗时跨过了 serverResolveTimeoutMs，期间可能已有
+                // 第二次请求判定「在飞的超时了」而重新 put 了一个更新的时刻并提交了新任务。无条件
+                // remove 会把那一笔抹掉，于是后续请求又不去重、再提交 —— 几个任务并发在跑，更容易
+                // 撞平台风控。remove(key, now) 只在值仍是本任务登记的时刻时才删，天然避开这一幕。
+                inFlight.remove(key, now);
             }
         });
     }

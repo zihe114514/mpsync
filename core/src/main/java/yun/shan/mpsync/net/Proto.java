@@ -113,6 +113,29 @@ public final class Proto {
     public static final String C_LEAVE       = "leave";
     public static final String C_DISBAND     = "disband";
     public static final String C_ENQUEUE     = "enqueue";      // member 点歌
+    /**
+     * 整张歌单灌进队列，全部落最低优先级档（排在插队与排队歌之后）。
+     *
+     * <p>负载：{@code playlist}（歌单名，可空）+ {@code tracks}（曲目对象数组，形状同
+     * {@code enqueue} 的 {@code track}，但<b>不带</b> {@code url} —— 链接由服务端按前瞻窗
+     * 逐首向房间要，见 {@code Room#resolveLookahead}）。</p>
+     *
+     * <p>为什么不复用 {@code enqueue} 发 N 帧：每一帧入队都会广播一次<b>整份</b>歌单，还会给裸进去
+     * 的曲目的地发一次 {@code url_needed}。一次点歌无所谓，一次灌一百首就是 N×N 的流量加上一轮
+     * 集中取流。追加式改动，{@code VERSION} 不动：老客户端不发这一帧，功能对它就是不存在。</p>
+     */
+    public static final String C_ENQUEUE_BATCH = "enqueue_batch";
+    /**
+     * 把某张歌单<b>还没播的</b>那批撤回队列（{@code playlist} = 当初灌进来时带的名字）。
+     *
+     * <p>这一帧是 {@code enqueue_batch} 的退路，没有它灌单就成了陷阱：一张 100 首的单子倒进去之后，
+     * 想收回来只有两个选择 —— 一首一首点「移除」（一百次全量广播），或者点「清空歌单」把<b>别人</b>
+     * 排的歌一起清掉。两个都不是用户按那颗按钮时想做的事。</p>
+     *
+     * <p>权限沿用逐首删除的那一套：管理权可以撤任何人的批次，普通成员只能撤自己灌进来的那批
+     * （按 {@code requester} 再校验一次，不能靠报一个别人的歌单名把对方的队列拆了）。</p>
+     */
+    public static final String C_CLEAR_PLAYLIST = "clear_playlist";
     public static final String C_PLAY_NOW    = "play_now";     // owner/admin: play this track immediately
     public static final String C_PLAY_INDEX  = "play_index";   // owner/admin: jump to queue index
     public static final String C_REMOVE      = "remove";
@@ -172,6 +195,40 @@ public final class Proto {
      * 每首白等一个超时窗的关键。{@code entryId} = 拒绝的是哪一份。</p>
      */
     public static final String C_ANALYZE_DECLINE = "analyze_decline";
+    /**
+     * 对 {@link #S_URL_NEEDED} 的<b>弃权</b>：「这一层我不答，别再等我了」。
+     *
+     * <p>沉默不是弃权的替代物。老规矩是「解不出就闭嘴」，那对<b>并行竞速</b>是对的 —— 反正没人等；
+     * 改成按层串行之后，闭嘴等于让整房白等一个窗口（{@code urlTierTimeoutMs}，默认 3 秒一层）。
+     * 所以被点名的这一层里，答不上的那台<b>必须</b>当场说一句，服务端收齐弃权就立刻推进下一层。</p>
+     *
+     * <p>负载：{@code entryId}（问的是哪一格）、{@code tier}（弃的是哪一层，必须等于服务端
+     * 当前那一层，否则按过期帧丢弃）、{@code source}/{@code songId}（对号用）、{@code reason}
+     * （一句为什么，形如 {@code no-platform} / {@code lx-off} / {@code lx-tx-failed} /
+     * {@code netease-trial} / {@code no-rescue}；带渠道键是因为一份脚本常常五个渠道，
+     * 光说「lx 失败」看不出是这台压根没这个渠道还是渠道当场死了。
+     * 只进日志与聊天提示，服务端不据此分支）。</p>
+     *
+     * <p>老客户端不发：那一层就等满窗口，行为退化成「多等一个层窗口」，不会更坏。</p>
+     */
+    public static final String C_URL_DECLINE = "url_decline";
+    /**
+     * {@link #S_SWITCH_RESCUE} 的答卷：把队列里那一格换成<b>另一平台的同一首歌</b>。
+     *
+     * <p>负载 {@code entryId} + {@code track}（形状同 {@link #C_ENQUEUE} 的 {@code track}，
+     * 带着新平台的 {@code source}/{@code songId}，能顺手解出直链就一起带上）。服务端只认
+     * <b>这首歌的点歌人</b>（或管理员）发来的替换，位置、档位与点歌人都保持不变。</p>
+     */
+    public static final String C_TRACK_REPLACE = "track_replace";
+    /**
+     * {@link #S_SWITCH_RESCUE} 的<b>弃权</b>：「我这台换不到，别等我的窗口，去问下一台」。
+     *
+     * <p>负载 {@code entryId} + {@code reason}（只进日志）。服务端只在「这一格当前派的就是
+     * 发帧的这一台」时才改派，所以迟到的、或者自己压根没被派过的弃权都会被丢掉。</p>
+     *
+     * <p>老客户端不发：那一台等到窗口超时才换下一台，行为只是慢一点，不会更坏。</p>
+     */
+    public static final String C_SWITCH_DECLINE = "switch_decline";
 
     // ── S2C ops ──────────────────────────────────────────────────────────────
     public static final String S_HELLO       = "hello";
@@ -188,6 +245,18 @@ public final class Proto {
     public static final String S_LEFT        = "left";
     public static final String S_NOTICE      = "notice";
     public static final String S_ERROR       = "error";
+    /**
+     * 向一台客户端重新要这条曲目的直链（分层串行，见 {@code Room#advanceAsk}）。
+     *
+     * <p>负载：{@code source}/{@code songId}/{@code name}（要解的是哪一首）、
+     * {@code entryId}（队列里那一格，应答原样带回）、{@code tier}（服务端当前在问第几层）、
+     * {@code deadlineMs}（这一层什么时候换人，客户端用它决定「还来不来得及跑一条慢链路」）、
+     * {@code mine}（这一格是不是收帧的人点的 —— 只有点歌人和管理员发 {@link #C_TRACK_REPLACE}
+     * 不会被拒，所以救援只在 {@code mine} 为真时才值得跑一次跨平台搜索）。</p>
+     *
+     * <p>三个新字段与 {@code mine} 都是追加式的：老客户端一个都不读，照样按 {@code source}
+     * +{@code songId} 应答，只是服务端要等满窗口才知道这一层没人答。</p>
+     */
     public static final String S_URL_NEEDED  = "url_needed";   // ask a client to re-resolve a stream URL
     /**
      * 指派一台客户端去算这一首的交接计划。
@@ -215,6 +284,25 @@ public final class Proto {
      * 客户端据此知道「这一首不会有交叠」而不是无限等下去。</p>
      */
     public static final String S_ANALYZE_STATE  = "analyze_state";
+    /**
+     * 整房没人答得上这一首时，单播给<b>点歌人</b>：「你本机能不能换到别的平台的同一首歌」。
+     *
+     * <p>为什么只问点歌人：跨平台换源要搜索、要验证，烧的是执行者自己的上行与第三方额度，
+     * 而这首歌是他点的 —— 由他决定值不值。他不在、没装别的平台、或者换到的版本同样只有
+     * 试听片段，就什么都不发，服务端按原样在总闸到点时跳过。</p>
+     *
+     * <p>负载：{@code entryId} + 原曲目的 {@code source}/{@code songId}/{@code name}/
+     * {@code artist}/{@code duration} + {@code attempt}（第几台）+ {@code mine}（这一格是不是
+     * 收帧的人点的）+ {@code deadlineMs}。客户端认 {@code entryId} 回执
+     * （{@link #C_TRACK_REPLACE}），对不上的帧丢弃；换不到就发 {@link #C_SWITCH_DECLINE}，
+     * 服务端立刻改派下一台，不必等满窗口。</p>
+     *
+     * <p><b>收件人不必是点歌人。</b>一次只派一台，派的是「房间里最可能换成功的那台」：
+     * 点歌人的机器先上，其次本机能出完整版的平台多、脚本覆盖渠道多的那台。
+     * 这一手存在的意义就是<b>让 MP 玩家也能借到 Mu 的脚本与跨平台匹配</b> —— MP 自己没有
+     * 这条流水线（{@code switchRescue} 恒为假），只问点歌人的话它在 MP 那一侧永远是死的。</p>
+     */
+    public static final String S_SWITCH_RESCUE = "switch_rescue";
 
     // ── S2C ops added in v2 ──────────────────────────────────────────────────
     /** 全服在线态列表。 */
@@ -251,14 +339,21 @@ public final class Proto {
      * Decode one frame.
      *
      * <p>Tolerates a payload that arrives without the varint header (a bridge or proxy may
-     * hand over the bare JSON): when the first byte is '{' the whole array is parsed as-is.
+     * hand over the bare JSON). The first byte alone is ambiguous: the varint length byte
+     * of a 123-byte payload is 0x7B, which is also '{', so a well-formed framed frame can
+     * start with '{' too. Resolve it by parsing — a bare JSON frame parses whole, while a
+     * framed one does not (prefixing a length byte to a '{...}' object yields '{{...}',
+     * never valid JSON), so a parse miss here means "fall through to varint framing".
      *
      * @return the decoded object, or {@code null} when the frame is malformed
      */
     public static JsonObject decode(byte[] data) {
         if (data == null || data.length == 0) return null;
         try {
-            if (data[0] == '{') return parse(new String(data, StandardCharsets.UTF_8));
+            if (data[0] == '{') {
+                JsonObject bare = tryParse(new String(data, StandardCharsets.UTF_8));
+                if (bare != null) return bare;
+            }
             int len = 0, shift = 0, i = 0;
             while (i < data.length) {
                 byte b = data[i++];
@@ -277,6 +372,15 @@ public final class Proto {
     private static JsonObject parse(String json) {
         JsonElement el = JsonParser.parseString(json);
         return el != null && el.isJsonObject() ? el.getAsJsonObject() : null;
+    }
+
+    /** Parse without throwing: returns {@code null} on any malformed input. */
+    private static JsonObject tryParse(String json) {
+        try {
+            return parse(json);
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     /** Minecraft-style varint, hand-written so Paper produces the same bytes as Fabric. */

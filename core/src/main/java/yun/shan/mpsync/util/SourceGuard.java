@@ -181,8 +181,13 @@ public final class SourceGuard {
      * host 是否是指向环回／私网／链路本地的 IP 字面量。域名一律返回 false。
      *
      * <p>覆盖 IPv4 的 127/8、10/8、172.16/12、192.168/16、169.254/16、0/8、100.64/10，
-     * 以及 IPv6 的 ::1、::、fc00::/7、fe80::/10，另外把 IPv4 映射地址（::ffff:10.0.0.1）
-     * 也一起判掉。</p>
+     * 以及 IPv6 的 ::1、::、fc00::/7、fe80::/10，另外把 IPv4 映射地址（::ffff:10.0.0.1
+     * 与 ::ffff:7f00:1 两种写法）也一起判掉。</p>
+     *
+     * <p>IPv4 字面量按 inet_aton 的历史写法解析（十进制整数 {@code 2130706433}、十六进制
+     * {@code 0x7f000001}、八进制 {@code 017700000001}、少于四段的 {@code 127.1}、结尾点
+     * {@code 127.0.0.1.}）—— Java 的 InetAddress、curl、浏览器都认这些等价写法，只认规范点分
+     * 十进制的话，上面每一种都能绕过这道闸把全房客户端指向环回。</p>
      */
     private static boolean isPrivateAddressLiteral(String host) {
         // URI.getHost() 对 IPv6 会带方括号，去掉后再看。
@@ -199,22 +204,38 @@ public final class SourceGuard {
         int zone = s.indexOf('%');
         if (zone >= 0) s = s.substring(0, zone);   // fe80::1%eth0
         if (s.equals("::1") || s.equals("::")) return true;
-        // IPv4 映射／兼容地址：末段是点分十进制时按 IPv4 规则判。
+        // IPv4 映射／兼容地址，两种写法都要判：
+        //   ::ffff:127.0.0.1 —— 末段点分十进制
+        //   ::ffff:7f00:1    —— 末两组十六进制拼起来就是那 4 个字节
         int lastColon = s.lastIndexOf(':');
         if (lastColon >= 0 && s.indexOf('.', lastColon) > 0) {
             int[] v4 = parseIpv4(s.substring(lastColon + 1));
             if (v4 != null && isPrivateIpv4(v4)) return true;
+        } else if (s.startsWith("::ffff:")) {
+            String[] g = s.split(":");
+            if (g.length >= 2) {
+                try {
+                    int hi = Integer.parseInt(g[g.length - 2], 16);
+                    int lo = Integer.parseInt(g[g.length - 1], 16);
+                    int[] v4 = {(hi >> 8) & 0xFF, hi & 0xFF, (lo >> 8) & 0xFF, lo & 0xFF};
+                    if (isPrivateIpv4(v4)) return true;
+                } catch (Throwable ignored) {
+                    // 末两组不是十六进制 —— 当它不是映射地址。
+                }
+            }
         }
+        // 不是以 :: 开头的地址才有一个真正的首组可供判前缀（::xxxx 的首组是空的）。
         String head = s.split(":")[0];
-        if (head.isEmpty()) return false;
-        int first;
-        try {
-            first = Integer.parseInt(head, 16);
-        } catch (Throwable ignored) {
-            return false;
+        if (!head.isEmpty()) {
+            try {
+                int first = Integer.parseInt(head, 16);
+                if ((first & 0xFE00) == 0xFC00) return true;    // fc00::/7 唯一本地
+                if ((first & 0xFFC0) == 0xFE80) return true;    // fe80::/10 链路本地
+            } catch (Throwable ignored) {
+                // 首组不是十六进制 —— 不是我们要判的那两个前缀。
+            }
         }
-        if ((first & 0xFE00) == 0xFC00) return true;    // fc00::/7 唯一本地
-        return (first & 0xFFC0) == 0xFE80;              // fe80::/10 链路本地
+        return false;
     }
 
     private static boolean isPrivateIpv4(int[] p) {
@@ -226,21 +247,68 @@ public final class SourceGuard {
         return p[0] >= 224;                                          // 组播／保留
     }
 
-    /** @return 4 段十进制，或 null（不是 IPv4 字面量）。 */
-    private static int[] parseIpv4(String h) {
+    /**
+     * 把一个 IPv4 字面量解析成 4 段 0-255，兼容 inet_aton 的历史写法（见
+     * {@link #isPrivateAddressLiteral}）。真正的域名（含字母、或某一段不是数字）一律返回 null。
+     *
+     * @return 4 段 0-255，或 null（不是 IPv4 字面量）。
+     */
+    private static int[] parseIpv4(String host) {
+        if (host == null || host.isEmpty()) return null;
+        String h = host.endsWith(".") ? host.substring(0, host.length() - 1) : host;   // 结尾点
+        if (h.isEmpty()) return null;
         String[] parts = h.split("\\.", -1);
-        if (parts.length != 4) return null;
-        int[] out = new int[4];
-        for (int i = 0; i < 4; i++) {
-            if (parts[i].isEmpty() || parts[i].length() > 3) return null;
-            for (int j = 0; j < parts[i].length(); j++) {
-                char c = parts[i].charAt(j);
-                if (c < '0' || c > '9') return null;
-            }
-            out[i] = Integer.parseInt(parts[i]);
-            if (out[i] > 255) return null;
+        if (parts.length < 1 || parts.length > 4) return null;
+        long[] vals = new long[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            long v = parseIpv4Part(parts[i]);
+            if (v < 0) return null;
+            vals[i] = v;
         }
-        return out;
+        // inet_aton：最后一段吃掉剩余所有低位字节，前面每段各占一个字节。
+        long addr;
+        switch (parts.length) {
+            case 1:  addr = vals[0]; break;
+            case 2:
+                if (vals[0] > 0xFF || vals[1] > 0xFFFFFF) return null;
+                addr = (vals[0] << 24) | vals[1];
+                break;
+            case 3:
+                if (vals[0] > 0xFF || vals[1] > 0xFF || vals[2] > 0xFFFF) return null;
+                addr = (vals[0] << 24) | (vals[1] << 16) | vals[2];
+                break;
+            default:
+                if (vals[0] > 0xFF || vals[1] > 0xFF || vals[2] > 0xFF || vals[3] > 0xFF) return null;
+                addr = (vals[0] << 24) | (vals[1] << 16) | (vals[2] << 8) | vals[3];
+                break;
+        }
+        if (addr < 0 || addr > 0xFFFFFFFFL) return null;
+        return new int[] {
+                (int) ((addr >> 24) & 0xFF),
+                (int) ((addr >> 16) & 0xFF),
+                (int) ((addr >> 8) & 0xFF),
+                (int) (addr & 0xFF)
+        };
+    }
+
+    /** 单段：十进制 / {@code 0x} 十六进制 / {@code 0} 开头八进制。@return 值，或 -1（非法）。 */
+    private static long parseIpv4Part(String s) {
+        if (s == null || s.isEmpty() || s.length() > 12) return -1;
+        try {
+            String t = s.toLowerCase(Locale.ROOT);
+            long v;
+            if (t.startsWith("0x")) {
+                if (t.length() == 2) return -1;
+                v = Long.parseLong(t.substring(2), 16);
+            } else if (t.charAt(0) == '0' && t.length() > 1) {
+                v = Long.parseLong(t.substring(1), 8);
+            } else {
+                v = Long.parseLong(t, 10);
+            }
+            return (v < 0 || v > 0xFFFFFFFFL) ? -1 : v;
+        } catch (Throwable ignored) {
+            return -1;
+        }
     }
 
     private static String hostOf(String url) {

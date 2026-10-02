@@ -185,13 +185,48 @@ class ProfileContributionTest {
         assertFalse(pr.canResolve(p, "gd"), "三个集合都没有 → 有希望答上也谈不上");
     }
 
-    // ── requestUrl 分层：贡献 VIP → 贡献 LX → 装了该平台 ─────────────────────
+    // ── requestUrl 分层：一次只问一层，上层落空才往下 ─────────────────────────
+    //
+    // 改造前这条钉的是「一次全发、顺序即优先级」，而先答先赢会让手快的脚本贡献者顶掉慢一点的
+    // 真会员答案。现在顺序变成了<b>层与层之间的串行</b>：第一发只点到真会员，那一层没人答或
+    // 全部弃权，才发第二发。入房顺序仍然故意是反的 —— 谁先谁后由分层决定，不由加入先后决定。
+
+    /** 把每层窗口压到 1ms：「等满一层」在测试里就是 tick 一下，不必真睡五秒。 */
+    private void tiersExpireInstantly() { cfg.urlTierTimeoutMs = 1L; }
+
+    /** 把每层窗口拉到不可能自然到点，用来单独验「弃权当场推进」这条路。 */
+    private void tiersNeverExpire() { cfg.urlTierTimeoutMs = 600_000L; }
+
+    private List<UUID> asked() {
+        List<UUID> out = new ArrayList<>();
+        for (FakePlatform.Sent s : host.sent) {
+            if (Proto.S_URL_NEEDED.equals(s.op())) out.add(s.to());
+        }
+        return out;
+    }
+
+    private List<String> rescues() {
+        List<String> out = new ArrayList<>();
+        for (FakePlatform.Sent s : host.sent) {
+            if (Proto.S_SWITCH_RESCUE.equals(s.op())) out.add(s.to() + ":"
+                    + s.frame().get("entryId").getAsLong());
+        }
+        return out;
+    }
+
+    private void tickTiers() {
+        try {
+            Thread.sleep(6L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        room.tick();
+    }
 
     @Test
-    void vipContributorIsAskedBeforeLxContributorAndTheFalseSignalLast() {
-        // 入房顺序故意是反的：LX 党最早进来，仍然要排在会员之后 —— 顺序由分层决定。
+    void eachTierIsAskedOnlyAfterThePreviousOneRunsOut() {
         UUID lxGuy = inRoom("LX党");
-        UUID poser = inRoom("登录党");   // 只登录、非会员、无 LX —— 这次的假信号本人
+        UUID poser = inRoom("登录党");   // 只登录、非会员、无 LX —— 上一轮那个假信号本人
         UUID vipGuy = inRoom("真会员");
         update(lxGuy, "vip", arr("netease"), "contributeVip", true,
                 "member", arr(), "resolvable", arr("netease"),
@@ -200,21 +235,149 @@ class ProfileContributionTest {
                 "member", arr(), "resolvable", arr(), "viaLx", arr());
         update(vipGuy, "vip", arr("netease"), "contributeVip", true,
                 "member", arr("netease"), "resolvable", arr("netease"), "viaLx", arr());
-        // 老客户端也压在第一层：改动不许改变他在分层里的位置。
+        // 老客户端只报了 vip：它进不了「真会员」那一层（会员位无从判断，不许猜），
+        // 但走 contributesVip 的退化判据落在第 3 层 —— 位置与改动前对它的待遇一致。
         UUID legacyGuy = inRoom("老客户端");
         update(legacyGuy, "vip", arr("netease"), "contributeVip", true);
+        // 点歌人要得到救援帧，必须先报过「本机有跨平台换源那条流水线」；这里给他这一位，
+        // 让「分层走完 → 救援」这一段还能被验到（另一条测试专门钉没报的人收不到）。
+        update(owner, "switchRescue", true);
+        tiersExpireInstantly();
         host.clear();
 
         // 点歌人（房主，没有任何档案）点一条注定要重解的曲子 → 触发分层询问。
         room.enqueue(owner, "房主", urlless("9"), false);
+        assertEquals(List.of(vipGuy), asked(), "第一发只点到真会员那一档");
 
-        List<UUID> asked = new ArrayList<>();
-        for (FakePlatform.Sent s : host.sent) {
-            if (Proto.S_URL_NEEDED.equals(s.op())) asked.add(s.to());
-        }
-        assertEquals(List.of(vipGuy, legacyGuy, lxGuy, poser, owner), asked,
-                "同一平台上的询问顺序必须是：贡献 VIP（含老客户端的退化判据）→ 贡献 LX → "
-                        + "只登录非会员的兜底层 → 点歌人（他刚失败过，垫到最后）。实际：" + asked);
+        host.clear();
+        tickTiers();
+        assertEquals(List.of(lxGuy), asked(), "第二发才是贡献 LX");
+        host.clear();
+        tickTiers();
+        assertEquals(List.of(legacyGuy), asked(),
+                "第三发是「贡献 VIP 但不是真会员」：本来不卖会员的平台与查不到档位的登录态");
+        host.clear();
+        tickTiers();
+        assertEquals(List.of(poser), asked(),
+                "第五发才是「装了该平台但不保证肯答」；点歌人那一层因为他刚失败过被跳过");
+        host.clear();
+        tickTiers();
+        assertEquals(List.of(owner), asked(), "最后一发广播给全房剩下的人");
+
+        host.clear();
+        tickTiers();
+        tickTiers();
+        assertTrue(asked().isEmpty(), "问完就没有下一层了，不能反复骚扰同一批人");
+        assertEquals(List.of(owner + ":" + room.current().entryId), rescues(),
+                "全层落空只向点歌人求一次跨平台救援");
+        host.clear();
+        tickTiers();
+        assertTrue(rescues().isEmpty(), "救援也是一次性的");
+    }
+
+    @Test
+    void rescueIsNotAskedOfClientsWithoutTheCrossSourcePipeline() {
+        // modernMP 与所有老版本客户端都没有跨平台换源那套代码。给它们发救援帧不是「多一次机会」，
+        // 而是服务端替这一首把总闸多放宽一个救援窗，然后什么都收不到 —— 比改造前更坏。
+        UUID guy = inRoom("只解析不换源");
+        update(guy, "vip", arr("netease"), "contributeVip", true,
+                "member", arr("netease"), "resolvable", arr("netease"), "viaLx", arr());
+        tiersExpireInstantly();
+        assertFalse(pr.canSwitchRescue(owner), "没报过这一位的默认就是「没有这条流水线」");
+        host.clear();
+
+        // 点歌人自己就是那台没报 switchRescue 的机器：分层走完也不该问它。
+        room.enqueue(owner, "房主", urlless("9"), false);
+        for (int i = 0; i < 10; i++) tickTiers();
+        assertTrue(rescues().isEmpty(), "能力位为假的人收不到救援帧");
+
+        // 报上这一位之后，下一首才轮得到救援 —— 判据来自档案，不是猜客户端牌子。
+        update(owner, "switchRescue", true);
+        assertTrue(pr.canSwitchRescue(owner));
+        host.clear();
+        room.enqueue(owner, "房主", urlless("10"), false);
+        long queued = room.queue().isEmpty() ? room.current().entryId : room.queue().get(0).entryId;
+        for (int i = 0; i < 10; i++) tickTiers();
+        assertEquals(List.of(owner + ":" + queued), rescues(),
+                "报了能力的点歌人才收到那一次跨平台救援");
+    }
+
+    @Test
+    void theLxTierPrefersTheWiderScriptRegardlessOfJoinOrder() {
+        // 单输入框架：一个脚本常常同时吃下几个渠道，两个人各挂一个脚本时
+        // 先问谁不该由进房先后决定。多渠道那台后进来，仍然该第一个被问。
+        UUID narrow = inRoom("单渠道");
+        UUID wide = inRoom("多渠道");
+        update(narrow, "vip", arr(), "contributeVip", false,
+                "member", arr(), "resolvable", arr("netease"), "viaLx", arr("netease"),
+                "contributeLx", true);
+        update(wide, "vip", arr(), "contributeVip", false,
+                "member", arr(), "resolvable", arr("netease", "qq", "kugou"),
+                "viaLx", arr("netease", "qq", "kugou"), "contributeLx", true);
+        tiersNeverExpire();
+        host.clear();
+
+        // 两个人都不是真会员：第一层没人，首发直接落在「贡献 LX」那一层。
+        room.enqueue(owner, "房主", urlless("9"), false);
+        assertEquals(List.of(wide, narrow), asked(),
+                "同一层内先问覆盖渠道多的那台，而不是先进房的那台");
+    }
+
+    @Test
+    void aDeclineMovesToTheNextTierWithoutWaitingForTheWindow() {
+        UUID lxGuy = inRoom("LX党");
+        UUID vipGuy = inRoom("真会员");
+        update(lxGuy, "vip", arr("netease"), "contributeVip", true,
+                "member", arr(), "resolvable", arr("netease"),
+                "viaLx", arr("netease"), "contributeLx", true);
+        update(vipGuy, "vip", arr("netease"), "contributeVip", true,
+                "member", arr("netease"), "resolvable", arr("netease"), "viaLx", arr());
+        tiersNeverExpire();   // 窗口长到不可能自然到点：只有弃权能推进
+        host.clear();
+
+        room.enqueue(owner, "房主", urlless("9"), false);
+        assertEquals(List.of(vipGuy), asked());
+        long entryId = room.current().entryId;
+
+        host.clear();
+        room.declineUrl(vipGuy, entryId, 1, "netease", "9", "trial-only");
+        assertEquals(List.of(lxGuy), asked(), "会员当场说「只解到试听」，第二发立刻发给 LX 党");
+
+        host.clear();
+        room.declineUrl(vipGuy, entryId, 1, "netease", "9", "trial-only");
+        assertTrue(asked().isEmpty(), "同一层的重复弃权不再推进");
+    }
+
+    @Test
+    void aStaleDeclineCannotSkipTheTierStillBeingAsked() {
+        UUID lxGuy = inRoom("LX党");
+        UUID vipGuy = inRoom("真会员");
+        update(lxGuy, "vip", arr("netease"), "contributeVip", true,
+                "member", arr(), "resolvable", arr("netease"),
+                "viaLx", arr("netease"), "contributeLx", true);
+        update(vipGuy, "vip", arr("netease"), "contributeVip", true,
+                "member", arr("netease"), "resolvable", arr("netease"), "viaLx", arr());
+        tiersNeverExpire();
+        host.clear();
+        room.enqueue(owner, "房主", urlless("9"), false);
+        long entryId = room.current().entryId;
+
+        host.clear();
+        // 层 2 的弃权拿到层 1 的窗口里：必须当过期帧丢弃，否则一层白等会被另一层替它决定。
+        room.declineUrl(lxGuy, entryId, 2, "netease", "9", "failed");
+        assertTrue(asked().isEmpty(), "层号对不上的弃权不许推进");
+    }
+
+    @Test
+    void estimatedLengthsAreJudgedByTheLooserThreshold() {
+        // 声明 240 秒。实测 150 秒（62.5%）按 80% 卡是试听片段；估算 150 秒按 50% 放行 ——
+        // CDN 报的尺寸与标称码率都会偏，拿实测的标准卡估算值会把完整版误杀成试听。
+        assertEquals(0.8d, cfg.minStreamDurationRatio, "实测阈值是既有的 80%");
+        assertEquals(0.5d, cfg.estimatedStreamDurationRatio, "估算阈值默认 50%");
+        assertTrue(Track.isTrialClip(150_000L, 240_000L, cfg), "实测 62.5% 算试听片段");
+        assertFalse(Track.isTrialClip(150_000L, 240_000L, cfg, true), "同样长度按估算放行");
+        assertTrue(Track.isTrialClip(100_000L, 240_000L, cfg, true), "短到 41% 仍然拒");
+        assertFalse(Track.isTrialClip(0L, 240_000L, cfg, true), "0 = 未知，照旧放行");
     }
 
     // ── 成员那一条的能力透出（两套客户端拿它画 chip）─────────────────────────

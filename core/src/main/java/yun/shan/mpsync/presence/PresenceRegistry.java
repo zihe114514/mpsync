@@ -69,10 +69,45 @@ public final class PresenceRegistry {
         return p != null && p.contributesLx(source);
     }
 
+    /** 这台机器的脚本覆盖几个渠道；没报过档案就是 0。用于给「贡献 LX」那一层内部排序。 */
+    public int lxChannelCount(UUID uuid) {
+        ClientProfile p = get(uuid);
+        return p == null ? 0 : p.lxChannelCount();
+    }
+
+    /**
+     * 这个平台上是<b>真会员</b>（客户端报的 {@code member} 数组里有）。
+     *
+     * <p>取流分层里第 1 层只问这一档。它和 {@link #contributesVip} 的差别就是这次分层的全部意义：
+     * 后者还包含「这个平台本来不卖会员」的那类，那一路同样能给完整版，但不该占着第一层 ——
+     * 会员答案的过期时间与稳定性都更好，先问它。</p>
+     */
+    public boolean isMember(UUID uuid, String source) {
+        ClientProfile p = get(uuid);
+        return p != null && p.isMember(source);
+    }
+
     /** 有能力解析（不管愿不愿意贡献）——排在贡献者后面问。 */
     public boolean canResolve(UUID uuid, String source) {
         ClientProfile p = get(uuid);
         return p != null && p.canResolve(source);
+    }
+
+    /**
+     * 这台客户端有没有跨平台换源那套流水线（{@code switchRescue}）。
+     *
+     * <p>没有的人收不到 {@code switch_rescue}：那一句要它跑一条压根不存在的流水线，
+     * 而服务端还得为它把总闸多留一个救援窗 —— 白等 12 秒换不来任何一次可播的机会。</p>
+     */
+    /** 这台机器能出完整版的平台数，用于跨平台匹配的派单排序。 */
+    public int resolvableCount(UUID uuid) {
+        ClientProfile p = get(uuid);
+        return p == null ? 0 : p.resolvableCount();
+    }
+
+    public boolean canSwitchRescue(UUID uuid) {
+        ClientProfile p = get(uuid);
+        return p != null && p.switchRescue;
     }
 
     /**

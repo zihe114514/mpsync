@@ -92,6 +92,20 @@ public final class ClientProfile {
     public boolean automixCapable;
 
     /**
+     * 这台客户端<b>有没有</b>跨平台换源那套流水线（报文里的 {@code switchRescue}）。
+     *
+     * <p>全层落空之后服务端会单播问点歌人「能不能换到别的平台的同一首歌」，那一次要跑十几秒的
+     * 搜索与验证，而且服务端为此得把总闸再放宽一个救援窗。对根本没有这条流水线的客户端
+     * （modernMP 只有各平台自己的解析链路，没有跨平台匹配）发这一句，结果是<b>纯亏</b>：
+     * 它什么都答不上，那一首却要多卡 12 秒才被跳过。</p>
+     *
+     * <p>所以这一位由客户端自报，为 false（含老客户端不发）时服务端压根不问这一手，
+     * 总闸也不延长 —— 与改造前逐字一致。真正的执行判据（换源开关开没开、有没有够得着的候选平台）
+     * 仍在客户端手里，它跑不动就什么都不发。</p>
+     */
+    public boolean switchRescue;
+
+    /**
      * 分析能力档位：{@code model} = 装了模型（Folia 推理，算得出 stem 交接、过渡族、频段倾斜）；
      * {@code dsp} = 只有内置信号处理；空串 = 不能分析。
      *
@@ -135,6 +149,36 @@ public final class ClientProfile {
         return memberSources.contains(s)
                 || (resolvableSources.contains(s) && !viaLxSources.contains(s));
     }
+
+    /**
+     * 这个平台上<b>真会员</b>。只认客户端报进 {@code member} 的那些 —— 查不到档位的平台
+     * （QQ 的上游就没有会员字段）宁可这里恒 false，也不拿「登录了」猜一个真会员。
+     *
+     * <p>老客户端没报过新数组（{@code capabilityKnown} 为假）时这里就是 false：它只报了
+     * {@code vip}，而 {@code vip} 是登录态，不能当会员用。那一档由分层里的第 3 层接住。</p>
+     */
+    public boolean isMember(String source) {
+        if (source == null || !capabilityKnown) return false;
+        return memberSources.contains(source.trim().toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * 这台机器靠 LX 脚本覆盖<b>几个平台</b>。
+     *
+     * <p>一个脚本通常同时声明 wy/tx/kg/kw/mg 好几路，而 {@code viaLx} 是按平台令牌逐个记的
+     * （客户端那边 {@code lxCovers(platform)} 一条一条判过），所以这个数就是「他那个脚本能吃下
+     * 几个渠道」。分层里拿它排序：渠道多的那台更可能答上，也更可能答上<b>之后</b>的每一首。</p>
+     */
+    public int lxChannelCount() { return viaLxSources.size(); }
+
+    /**
+     * 本机现在能出<b>完整版</b>的平台数（{@code resolvable} 的大小）。
+     *
+     * <p>跨平台匹配是一台机器挨个平台去搜索，够得着的平台越多越可能命中，所以这一位就是
+     * 派单的首要权重。没报过新数组的人（老客户端）这里是 0 —— 它们也没有那条流水线，
+     * 本来就进不了候选表。</p>
+     */
+    public int resolvableCount() { return resolvableSources.size(); }
 
     /** 「贡献 LX」档：愿意用 LX 脚本替房间解歌，且该平台确实只有靠 LX 才解得出。 */
     public boolean contributesLx(String source) {
@@ -194,6 +238,9 @@ public final class ClientProfile {
         // 房间交接计划的分析能力。老客户端不发这两项，于是 automixCapable 保持上次的值
         // （默认 false）—— 它们不会被指派，房间照常按「没人算得出」处理。
         if (o.has("automixCapable")) automixCapable = Proto.bool(o, "automixCapable", automixCapable);
+        // 跨平台救援同理：不发这一位的客户端（含全部老版本与 modernMP）永远收不到救援帧，
+        // 服务端也不为它把总闸放宽 —— 保持改造前的跳过时机。
+        if (o.has("switchRescue")) switchRescue = Proto.bool(o, "switchRescue", switchRescue);
         if (o.has("automixEngine")) {
             String engine = Proto.str(o, "automixEngine", "");
             automixEngine = engine == null ? "" : engine.trim().toLowerCase(Locale.ROOT);

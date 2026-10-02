@@ -395,6 +395,12 @@ public final class RoomManager {
     public void onPlayerJoin(UUID uuid) {
         Room room = roomOf(uuid);
         if (room == null) return;
+        // 断线期间可能被「按玩家名」封禁 —— 那一刻人不在线，UUID 查不到，enforceBan 没能触发。
+        // 重连续座之前补一次判定：命中就请出房间，而不是把被封的人原样接回来继续听。
+        if (banReason(uuid) != null) {
+            enforceBan(uuid);
+            return;
+        }
         room.join(uuid, Net.nameOf(uuid));   // re-attach the seat kept across the disconnect
         room.sendSnapshot(uuid);
         room.broadcastState();
@@ -487,6 +493,12 @@ public final class RoomManager {
                     hello.addProperty("channelCode", CHANNEL_CODE);
                     hello.addProperty("channelMaxPerMember", cfg.channelMaxPerMember);
                     hello.addProperty("publicRoomsEnabled", cfg.publicRoomsEnabled);
+                    // 「播放歌单」这一档能力。客户端靠 playlistBatchLimit>0 判断这台服务端认不认识
+                    // enqueue_batch —— 老服务端不发这个字段，客户端取到 0，那颗按钮就不出现，
+                    // 不会出现「点了之后服务端一句 error 把整张单退回聊天栏」的界面。
+                    // playlistAdminOnly 只影响按钮的 enabled 条件，不影响它显不显示。
+                    hello.addProperty("playlistBatchLimit", cfg.playlistBatchLimit);
+                    hello.addProperty("playlistAdminOnly", cfg.playlistAdminOnly);
                     hello.addProperty("voteWindowMs", cfg.voteWindowMs);
                     hello.addProperty("voteSkipRatio", cfg.voteSkipRatio);
                     hello.addProperty("voteKickRatio", cfg.voteKickRatio);
@@ -577,7 +589,26 @@ public final class RoomManager {
                 Track track = Track.fromJson(Proto.obj(msg, "track"), cfg);
                 String who = Net.nameOf(uuid);
                 QueueEntry entry = room.enqueue(uuid, who, track, Proto.bool(msg, "next", false));
-                room.notice(who + " 点歌：" + entry.track.display());
+                // 插队与点歌在队列里落的位置不同，全房看到的这句也得不同：只写「点歌」的话，
+                // 别人只看到有人点了一首、自己的排队却被挤后，像是服务端排序坏了。
+                room.notice(who + (entry.jumped() ? " 插了一首：" : " 点歌：") + entry.track.display());
+            }
+            case Proto.C_ENQUEUE_BATCH -> {
+                String banned = banReason(uuid);
+                if (banned != null) { Net.error(uuid, banned); return; }
+                // 频道里不给灌单：全服共用的房间，一个人倒进 100 首就把所有人的排队挡在后面了，
+                // 而那里本来就已经有「人均 3 首」这一档在管着逐首点歌。关掉它比放宽它更好解释。
+                if (room.channel()) { Net.error(uuid, "服务器频道不支持播放整张歌单，请一首一首点"); return; }
+                if (cfg.playlistBatchLimit <= 0) { Net.error(uuid, "服务器未开启播放歌单功能"); return; }
+                if (cfg.playlistAdminOnly && !control) {
+                    Net.error(uuid, "本房间只有房主与管理员能播放整张歌单");
+                    return;
+                }
+                if (!control && !cfg.membersCanEnqueue) { Net.error(uuid, "本房间未开放点歌"); return; }
+                String label = Proto.str(msg, "playlist", "");
+                Room.BatchResult result = room.enqueueBatch(uuid, Net.nameOf(uuid), label,
+                        Proto.arr(msg, "tracks"));
+                room.notice(Net.nameOf(uuid) + " " + result.describe());
             }
             case Proto.C_PLAY_NOW -> {
                 if (requireControl(uuid, control)) return;
@@ -606,6 +637,14 @@ public final class RoomManager {
             case Proto.C_CLEAR -> {
                 if (requireControl(uuid, control)) return;
                 room.clearQueue();
+            }
+            case Proto.C_CLEAR_PLAYLIST -> {
+                // 撤的是「某张歌单还没播的那批」，不是整条队列，所以普通成员也能用 —— 前提是他撤的
+                // 正是自己灌进来的那批，这一点由 Room#removePlaylist 按 requester 再校验一次。
+                String name = Proto.str(msg, "playlist", "");
+                int removed = room.removePlaylist(uuid, name);
+                if (removed <= 0) Net.error(uuid, "队列里没有《" + (name.isEmpty() ? "这张" : name) + "》待播的歌了");
+                else room.notice(Net.nameOf(uuid) + " 撤回了歌单《" + name + "》剩下的 " + removed + " 首");
             }
             case Proto.C_PAUSE -> {
                 if (requireControl(uuid, control)) return;
@@ -720,13 +759,31 @@ public final class RoomManager {
                         Proto.bool(msg, "agree", true));
                 if (err != null) Net.error(uuid, err);
             }
-            // 直链应答：必须连带平台一起回传，否则跨平台房间里 songId 相同的两首歌会串链接
-            case Proto.C_URL_SUPPLY -> room.supplyUrl(
+            // 直链应答：必须连带平台一起回传，否则跨平台房间里 songId 相同的两首歌会串链接。
+            // 还要带上<b>是谁答的</b>与 entryId：分层采纳要记「这条链接出自第几层」，
+            // 而迟到答案能不能覆盖先到的，全看那个层号 —— 不传就只能退回先答先赢。
+            case Proto.C_URL_SUPPLY -> room.supplyUrl(uuid,
+                    Proto.num(msg, "entryId", 0L),
                     Proto.str(msg, "source", Proto.SOURCE_NETEASE),
                     Proto.str(msg, "songId", ""),
                     Proto.str(msg, "url", ""),
                     Proto.num(msg, "urlExpiresAt", 0L),
-                    Proto.num(msg, "urlDuration", 0L));
+                    Proto.num(msg, "urlDuration", 0L),
+                    Proto.bool(msg, "urlDurationEstimated", false));
+            // 弃权：这一层答不上，当场说一声，服务端收齐就立刻推进下一层。
+            case Proto.C_URL_DECLINE -> room.declineUrl(uuid,
+                    Proto.num(msg, "entryId", 0L),
+                    (int) Proto.num(msg, "tier", -1L),
+                    Proto.str(msg, "source", Proto.SOURCE_NETEASE),
+                    Proto.str(msg, "songId", ""),
+                    Proto.str(msg, "reason", ""));
+            // 跨平台救援的答卷：把那一格换成另一平台的同一首歌。
+            case Proto.C_TRACK_REPLACE -> room.replaceTrack(uuid,
+                    Proto.num(msg, "entryId", 0L),
+                    Proto.obj(msg, "track"));
+            // 被派去换源的那台说「我这台换不到」：当场改派下一台，不必等满一个救援窗。
+            case Proto.C_SWITCH_DECLINE -> room.switchDecline(uuid,
+                    Proto.num(msg, "entryId", 0L), Proto.str(msg, "reason", ""));
             // 交接计划。服务端只做校验与广播 —— 分析需要音频，只能在客户端做；
             // 但交接点必须全房一致，所以由一台算出、服务端存下并转发。
             // 「哪一台」不再是房主：服务端按「点歌人 → 房主 → 房间里任何能算的人」指派
