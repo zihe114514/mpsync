@@ -339,14 +339,21 @@ public final class Proto {
      * Decode one frame.
      *
      * <p>Tolerates a payload that arrives without the varint header (a bridge or proxy may
-     * hand over the bare JSON): when the first byte is '{' the whole array is parsed as-is.
+     * hand over the bare JSON). The first byte alone is ambiguous: the varint length byte
+     * of a 123-byte payload is 0x7B, which is also '{', so a well-formed framed frame can
+     * start with '{' too. Resolve it by parsing — a bare JSON frame parses whole, while a
+     * framed one does not (prefixing a length byte to a '{...}' object yields '{{...}',
+     * never valid JSON), so a parse miss here means "fall through to varint framing".
      *
      * @return the decoded object, or {@code null} when the frame is malformed
      */
     public static JsonObject decode(byte[] data) {
         if (data == null || data.length == 0) return null;
         try {
-            if (data[0] == '{') return parse(new String(data, StandardCharsets.UTF_8));
+            if (data[0] == '{') {
+                JsonObject bare = tryParse(new String(data, StandardCharsets.UTF_8));
+                if (bare != null) return bare;
+            }
             int len = 0, shift = 0, i = 0;
             while (i < data.length) {
                 byte b = data[i++];
@@ -365,6 +372,15 @@ public final class Proto {
     private static JsonObject parse(String json) {
         JsonElement el = JsonParser.parseString(json);
         return el != null && el.isJsonObject() ? el.getAsJsonObject() : null;
+    }
+
+    /** Parse without throwing: returns {@code null} on any malformed input. */
+    private static JsonObject tryParse(String json) {
+        try {
+            return parse(json);
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     /** Minecraft-style varint, hand-written so Paper produces the same bytes as Fabric. */

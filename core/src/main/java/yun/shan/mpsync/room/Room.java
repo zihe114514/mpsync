@@ -319,6 +319,13 @@ public final class Room {
             analystAssignedAt = 0L;
             assignAnalyzer(false);
         }
+        // 走掉的可能是最后一个在线的人，剩下的全是离线占位。markOffline 在掉线时会记一笔
+        // allOfflineSince，但 leave/kick 这条路不经过它 —— 不补的话 dead() 永远判不出这个空房
+        // （members 非空且 allOfflineSince==0 恒为 false），房间成僵尸，占着房号与 maxRooms
+        // 名额不回收，攒到上限后别人就建不了房。
+        if (!members.isEmpty() && members.values().stream().noneMatch(x -> x.online)) {
+            allOfflineSince = System.currentTimeMillis();
+        }
     }
 
     /** Connection lost — keep the seat so a reconnect resumes in-place. */
@@ -398,6 +405,12 @@ public final class Room {
     public QueueEntry enqueue(UUID uuid, String name, Track track, boolean playNext) {
         if (cfg.maxQueueSize > 0 && queue.size() >= cfg.maxQueueSize) {
             throw new IllegalStateException("队列已满");
+        }
+        // 没有时长就定不出交接点：自动进歌判据是 {@code positionMs() >= fireAt(dur)}，dur=0 时
+        // 那句永远不成立，这首歌放完也不会前进，整间房间会卡死在它上面，只能靠有人手按「下一曲」。
+        // enqueueBatch 早就挡了这一档，单首点歌这条路一直漏着（见那里的注释）—— 现在一并补上。
+        if (track.durationMs <= 0L) {
+            throw new IllegalStateException("这首歌缺少时长信息，无法点播");
         }
         int cap = perMemberCap();
         if (!controls(uuid) && cap > 0 && pendingOf(uuid) >= cap) {
@@ -1159,6 +1172,10 @@ public final class Room {
 
     /** Owner/admin free switch: play this track right now, ahead of the queue. */
     public void playNow(UUID actor, String actorName, Track track) {
+        // 和 enqueue 同一道闸：0 时长的歌定不出交接点，startEntry 后房间会永远停在它上面。
+        if (track.durationMs <= 0L) {
+            throw new IllegalStateException("这首歌缺少时长信息，无法播放");
+        }
         QueueEntry entry = new QueueEntry(track, actor, actorName);
         queue.removeIf(e -> e.track.key().equals(track.key()));
         startEntry(entry, 0L);
@@ -1253,8 +1270,15 @@ public final class Room {
         refusedAnalysts.clear();
         // 切歌投票是冲着「这一首」来的：歌一换，进行中的 SKIP 投票就没了对象，留着会在
         // finishVote → next 时把新的这一首误切掉（投票卡显示的还是上一首的名字）。KICK 投票
-        // 与放哪首歌无关，保留。
-        votes.removeIf(v -> v.kind == VoteSession.Kind.SKIP);
+        // 与放哪首歌无关，保留。移除时顺手给客户端补一帧「这票关了」—— 只删不广播的话，投票卡
+        // 会残留在界面上点了没反应，直到下一次全量快照（有人进房 / C_SYNC）才消失。
+        for (Iterator<VoteSession> it = votes.iterator(); it.hasNext(); ) {
+            VoteSession v = it.next();
+            if (v.kind != VoteSession.Kind.SKIP) continue;
+            v.close(voteEligible(v));
+            broadcastVote(v);
+            it.remove();
+        }
         // 换歌是最容易引发集体误判的时刻：全房都在开流，位置必然是散的。开着交叠时还要再多让
         // 一段 —— 混音期间本机与房间时钟本来就「故意」差着几秒，那几发心跳只会把淡入薅断。
         markCommand(blendMillis > 0L ? cfg.automixLeadMs + blendMillis + 1000L : 0L);
