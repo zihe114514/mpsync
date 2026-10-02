@@ -1251,6 +1251,10 @@ public final class Room {
         analystAttempt = 0;
         planTargetEntryId = 0L;   // 新 current 的 automixPlan 天然为 null，计划瞄准也要归零
         refusedAnalysts.clear();
+        // 切歌投票是冲着「这一首」来的：歌一换，进行中的 SKIP 投票就没了对象，留着会在
+        // finishVote → next 时把新的这一首误切掉（投票卡显示的还是上一首的名字）。KICK 投票
+        // 与放哪首歌无关，保留。
+        votes.removeIf(v -> v.kind == VoteSession.Kind.SKIP);
         // 换歌是最容易引发集体误判的时刻：全房都在开流，位置必然是散的。开着交叠时还要再多让
         // 一段 —— 混音期间本机与房间时钟本来就「故意」差着几秒，那几发心跳只会把淡入薅断。
         markCommand(blendMillis > 0L ? cfg.automixLeadMs + blendMillis + 1000L : 0L);

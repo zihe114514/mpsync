@@ -395,6 +395,12 @@ public final class RoomManager {
     public void onPlayerJoin(UUID uuid) {
         Room room = roomOf(uuid);
         if (room == null) return;
+        // 断线期间可能被「按玩家名」封禁 —— 那一刻人不在线，UUID 查不到，enforceBan 没能触发。
+        // 重连续座之前补一次判定：命中就请出房间，而不是把被封的人原样接回来继续听。
+        if (banReason(uuid) != null) {
+            enforceBan(uuid);
+            return;
+        }
         room.join(uuid, Net.nameOf(uuid));   // re-attach the seat kept across the disconnect
         room.sendSnapshot(uuid);
         room.broadcastState();
