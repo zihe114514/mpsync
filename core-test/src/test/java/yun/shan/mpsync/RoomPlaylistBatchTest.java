@@ -473,11 +473,13 @@ class RoomPlaylistBatchTest {
         JsonObject reply = host.last(Proto.S_HELLO);
         assertNotNull(reply);
         assertTrue(reply.get("playlistBatchLimit").getAsInt() > 0, "客户端靠它决定那颗按钮出不出现");
-        assertTrue(reply.get("playlistAdminOnly").getAsBoolean(), "默认只有房主/管理员能灌");
+        assertFalse(reply.get("playlistAdminOnly").getAsBoolean(),
+                "默认对成员开放灌单（另有单次上限与导入冷却兜底）");
     }
 
     @Test
     void aMemberIsRefusedWhileAdminOnlyIsOn() {
+        cfg.playlistAdminOnly = true;   // 默认已开放：显式收紧才走拒绝路径
         room.enqueue(owner, "房主", playable("start"), false);
         host.clear();
 

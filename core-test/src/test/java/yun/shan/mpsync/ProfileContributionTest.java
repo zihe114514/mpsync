@@ -374,7 +374,11 @@ class ProfileContributionTest {
         // CDN 报的尺寸与标称码率都会偏，拿实测的标准卡估算值会把完整版误杀成试听。
         assertEquals(0.8d, cfg.minStreamDurationRatio, "实测阈值是既有的 80%");
         assertEquals(0.5d, cfg.estimatedStreamDurationRatio, "估算阈值默认 50%");
-        assertTrue(Track.isTrialClip(150_000L, 240_000L, cfg), "实测 62.5% 算试听片段");
+        // 实测 62.5% 但流本身有 150 秒 —— 超过 90 秒豁免线，按完整版放行。
+        // 这正是「同名不同版本时长错位」误杀的那一类（见 Track.TRIAL_CLIP_SERVED_FLOOR_MS）。
+        assertFalse(Track.isTrialClip(150_000L, 240_000L, cfg), "实测流超 90 秒豁免线，不再按比例判死");
+        // 比例判定只对豁免线以内的流继续生效：60 秒对 240 秒（25%）照旧是试听。
+        assertTrue(Track.isTrialClip(60_000L, 240_000L, cfg), "短于豁免线的实测流照比例判");
         assertFalse(Track.isTrialClip(150_000L, 240_000L, cfg, true), "同样长度按估算放行");
         assertTrue(Track.isTrialClip(100_000L, 240_000L, cfg, true), "短到 41% 仍然拒");
         assertFalse(Track.isTrialClip(0L, 240_000L, cfg, true), "0 = 未知，照旧放行");
