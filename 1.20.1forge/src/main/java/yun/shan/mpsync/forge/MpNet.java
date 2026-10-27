@@ -31,7 +31,13 @@ public final class MpNet {
         C2S_CH.addListener(MpNet::onC2S);
     }
 
-    private static void onC2S(NetworkEvent.ServerCustomPayloadEvent event) {
+    /**
+     * C2S 包（PLAY_TO_SERVER）投递的事件类是 {@code ClientCustomPayloadEvent} ——
+     * 事件名里的 Client 说的是「包从客户端来」，不是在哪处理。收
+     * {@code ServerCustomPayloadEvent} 的话类型对不上，监听器永远不触发，
+     * 整个服务端对 C2S 失聪（vanilla 侧只会在客户端看到 Unknown packet）。
+     */
+    private static void onC2S(NetworkEvent.ClientCustomPayloadEvent event) {
         FriendlyByteBuf buf = event.getPayload();
         if (buf == null) return;
         byte[] data = new byte[buf.readableBytes()];
