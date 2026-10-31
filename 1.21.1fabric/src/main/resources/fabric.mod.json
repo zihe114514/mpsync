@@ -5,7 +5,7 @@
   "name": "MusicParty",
   "description": "服务器托管的一起听房间：房主/管理员控制播放，成员排队点歌。仅搬运元数据与时钟，不搬运音频。",
   "authors": ["yun.shan"],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "environment": "*",
   "entrypoints": {
     "main": ["yun.shan.mpsync.fabric.MusicPartyMod"]

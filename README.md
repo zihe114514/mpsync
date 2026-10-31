@@ -12,7 +12,19 @@
 [![协议](https://img.shields.io/badge/%E5%8D%8F%E8%AE%AE-%E5%BC%80%E6%94%BE%E6%8E%A5%E5%85%A5-2f7fd0?style=flat-square&labelColor=2b2b33)](docs/接入指南.md)
 
 **配套客户端：[MuoniumPlayer](https://github.com/zihe114514/MuoniumPlayer-multiversion)** —— 游戏内音乐播放器 Mod，房间点歌、投票、队列全在它的界面里操作。
-官网：[melodifymc.cc.cd](https://melodifymc.cc.cd/)
+官网：[melodifymc.cc.cd](https://melodifymc.cc.cd/) · MC 百科：[class/31323](https://www.mcmod.cn/class/31323.html)
+
+---
+
+## 🔗 生态索引 —— 从这里开始
+
+一起听是一个三件套生态，按你的身份对号入座：
+
+| 我是… | 去哪里 | 做什么 |
+| --- | --- | --- |
+| **玩家** | [MuoniumPlayer 客户端](https://github.com/zihe114514/MuoniumPlayer-multiversion) · [官网下载](https://melodifymc.cc.cd/) · [MC 百科](https://www.mcmod.cn/class/31323.html) | 装客户端 Mod，播放器里点歌、看词、建房进房 |
+| **服主** | 本仓库 [安装](#安装) | 装服务端组件，开全服房间 |
+| **其他 Mod 作者** | [docs/接入指南.md](docs/接入指南.md) | 按开放的线协议把你的客户端接入房间 —— 两个已验证实现可直接对照 |
 
 </div>
 
@@ -33,13 +45,14 @@
 
 ## 三件套：三个仓库怎么配合
 
-一起听由三个开源项目组成，各管一段：
+一起听由三个开源项目组成，各管一段（速查表见顶部「生态索引」，这里是细节）：
 
 | 仓库 | 角色 | 谁需要装 |
 | --- | --- | --- |
 | **[MuoniumPlayer](https://github.com/zihe114514/MuoniumPlayer-multiversion)** | 玩家侧的音乐播放器 Mod：点歌、排队、投票、歌词、下载全在这里 | 每个想听歌/点歌的玩家 |
 | **本仓库（mpsync）** | 服务端的房间引擎：建房、成员、队列、全房时钟同步 | 只有「服务器房间」模式需要服主装 |
 | **官网 [melodifymc.cc.cd](https://melodifymc.cc.cd/)** | 下载入口、更新日志与公告 | — |
+| **MC 百科 [class/31323](https://www.mcmod.cn/class/31323.html)** | 中文介绍、下载镜像与评论区 | — |
 
 **没有服务器权限？** 不需要 mpsync 也能一起听 —— MuoniumPlayer 自带「直连房间」和「局域网房间」两种模式，房主发一条邀请串，好友粘贴即进，什么都不用装（见客户端 README 的「一起听」一节）。
 
@@ -53,7 +66,19 @@
 
 启动后服务器控制台看到 `MusicParty ready` 即就绪。玩家在游戏内按 MuoniumPlayer 的说明加入或创建房间。
 
-### 指令（四个平台完全一致）
+### 玩家怎么用：全在播放器界面里
+
+装好 [MuoniumPlayer](https://github.com/zihe114514/MuoniumPlayer-multiversion) 客户端后，一起听**不需要记任何指令** —— 播放器界面就是完整的房间操作台：
+
+- **建房 / 进房**：播放器侧栏点「一起听」，选服务器房间，建房发邀请或直接加入
+- **点歌**：搜索到的歌右键「投到房间」，或从歌单整张灌进队列；队列支持三档优先级与插队
+- **管理**：投票切歌（过半）、投票踢人（80%）、房主任命管理员、转让房主 —— 全是界面按钮
+- **听歌体验不打折**：房间里的歌照常有逐字歌词、封面、下载、Automix 无缝切歌，跟自己听一模一样
+- **个人暂停**：你可以暂停自己这边的播放去处理别的事，不影响房间其他人
+
+### 指令（备用，四个平台完全一致）
+
+绝大多数操作在播放器界面完成；指令主要用于服务器控制台和没有客户端界面的场景：
 
 ```
 /mp create [房名]         创建房间
@@ -67,8 +92,6 @@
 /mp info | /mp queue      房间信息 | 一起听歌单
 /mp list                  查看全部房间（OP）
 ```
-
-日常点歌、切歌、看歌词都在 MuoniumPlayer 的播放器界面里完成，指令只是备用。
 
 ### 常用配置 `config/mpsync.json`
 
@@ -105,9 +128,7 @@
 
 ## 给其他 Mod / 整合包作者：接入一起听
 
-想让你的客户端 Mod 也能加入 mpsync 房间？线协议是**开放**的，已有两个客户端（MuoniumPlayer 与 Melodify）在同一个房间里互听。接入所需的一切写在：
-
-**📄 [docs/接入指南.md](docs/接入指南.md)** —— 线协议、通道注册、房间状态机、时钟同步策略、最小接入清单。
+顶部「生态索引」里那一份 [docs/接入指南.md](docs/接入指南.md) 就是为你准备的：线协议、通道注册、时钟同步策略、最小接入清单，两个已验证实现（MuoniumPlayer 与 Melodify）可直接对照。
 
 ---
 

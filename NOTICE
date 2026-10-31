@@ -1,0 +1,18 @@
+MusicParty / mpsync
+Copyright 2026 MuoniumPlayer Team（作者：云杉、心事抱抱、N0ne、eyz2021）
+
+本产品采用 Apache License 2.0 授权，完整文本见同目录 LICENSE。
+
+────────────────────────────────────────
+第三方组件与许可
+────────────────────────────────────────
+
+  Gson                                     Apache License 2.0
+
+Minecraft 是 Mojang AB 的商标。本项目与 Mojang AB 无关，
+未获得其认可或赞助。
+
+本项目支持的各音乐平台（网易云音乐、QQ 音乐、酷狗音乐、汽水音乐、
+YouTube Music、哔哩哔哩、Spotify、Apple Music、GD 音乐台）的名称、
+商标归各自权利人所有。本项目的说明中提及这些平台仅用于说明支持范围，
+不表示任何隶属、合作或背书关系。
