@@ -2,6 +2,8 @@ name: MusicParty
 version: '${version}'
 main: yun.shan.mpsync.paper.MusicPartyPlugin
 api-version: '${api_version}'
+# Folia 只加载声明了这一行的插件。线程模型见 paper-common 的 PaperPlatform 类注释。
+folia-supported: true
 description: 服务器托管的一起听房间（仅搬运元数据与时钟，不搬运音频）
 authors: [yun.shan]
 commands:
