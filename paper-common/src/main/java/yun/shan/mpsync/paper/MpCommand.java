@@ -8,6 +8,7 @@ import org.bukkit.entity.Player;
 import yun.shan.mpsync.command.MpTextCommands;
 
 import java.util.List;
+import java.util.UUID;
 
 /** {@code /mp ...} on Paper — the same shared implementation Fabric registers. */
 public final class MpCommand implements CommandExecutor, TabCompleter {
@@ -25,9 +26,15 @@ public final class MpCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         boolean operator = sender.isOp() || sender.hasPermission("mpsync.admin");
-        for (String line : MpTextCommands.run(player.getUniqueId(), operator, args)) {
-            sender.sendMessage(line);
-        }
+        UUID uuid = player.getUniqueId();
+        String[] argv = args.clone();
+        // MpTextCommands.run 会读写房间状态：Folia 上玩家指令跑在玩家所在区域的线程，
+        // 必须先回引擎线程。Paper 上指令本就在主线程，execute 就地执行，反馈仍是同一 tick。
+        // 反馈直接发回去，理由同 PaperPlatform#chat（见类注释）。
+        platform.execute(() -> {
+            List<String> lines = MpTextCommands.run(uuid, operator, argv);
+            for (String line : lines) player.sendMessage(line);
+        });
         return true;
     }
 
