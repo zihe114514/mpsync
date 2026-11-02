@@ -236,6 +236,28 @@ public final class Room {
     /** 频道的空闲歌单（只对频道生效），见 {@link #topUpIdle()}。 */
     private IdleSource idle;
 
+    /**
+     * 成员版本号：有人进来（含重连）或有人改了客户端档案（共享会员 / LX / 换源能力）时 +1。
+     * 「房间里没人能放」的判定只对同一个版本成立，见 {@link QueueEntry#unresolvableAt}。
+     */
+    private int rosterVersion;
+
+    /**
+     * 判定为「没人能放」、等着处理的条目。
+     *
+     * <p>不当场动队列：判定发生在分层 / 换源的调用链深处，而 {@link #tickUrlTiers} 与
+     * {@link #tickRescues} 正在用增强 for 遍历队列，当场删会抛并发修改异常。登记在这里，
+     * 下一个 tick 开头由 {@link #flushUnresolvable} 统一处理（延迟最多一个 tick）。</p>
+     */
+    private final List<QueueEntry> unresolvablePending = new ArrayList<>();
+
+    /** 有人改了客户端档案：之前「没人能放」的判定作废，前瞻窗会重新去问。 */
+    public void onProfileChanged() { rosterVersion++; }
+
+    private boolean unresolvable(QueueEntry e) {
+        return e != null && e.unresolvableAt == rosterVersion;
+    }
+
     public void setIdleSource(IdleSource source) { this.idle = source; }
 
     /** 注入「服务器管理员」判据。频道的管理权全靠它。 */
@@ -304,6 +326,8 @@ public final class Room {
         m.offlineSince = 0L;
         m.lastSeen = System.currentTimeMillis();
         allOfflineSince = 0L;
+        // 来了一台（或回来一台）机器：它可能正好解得出之前没人能放的歌。
+        rosterVersion++;
         // 新来的这台可能正好是房间里唯一能算的机器（点歌人自己进来、或他带了模型）。
         refreshAnalyst();
         return m;
@@ -1432,6 +1456,9 @@ public final class Room {
             if (entry == current && waitingUrl) resumeWithFreshUrl();
             return;
         }
+        // 前瞻窗的静默备货：这批成员已经证明放不了它，就别每 30 秒把分层和换源再重走一遍。
+        // 成员一变（有人进来 / 改了共享开关）这个判定自动作废。
+        if (quiet && unresolvable(entry)) return;
         String source = entry.track.source;
 
         // ① 服主配置了这个平台的 Token 时，先让服务端自己去解析。这条路对玩家零成本：
@@ -1452,6 +1479,7 @@ public final class Room {
         // 走到这说明这条链已经不新鲜了（requestUrl 的入口判过 hasFreshUrl）：点歌人层记账
         // 到此作废——之后的分层答案按真实层号记账，重新变得可比。
         entry.adoptedTier = QueueEntry.ADOPTED_NONE;
+        entry.resolveStartedAt = System.currentTimeMillis();
         advanceAsk(entry, ASK_MEMBER, quiet);
         if (!quiet && entry.askTier != QueueEntry.ASK_IDLE)
             notice("正在获取《" + entry.track.name + "》的播放地址…");
@@ -1596,9 +1624,8 @@ public final class Room {
         UUID next = pickRescueExecutor(entry);
         if (next == null) {
             entry.closeRescue();
-            if (tried == 0) return;   // 一台都没派出去过，别播多余的提示
-            notice("问过了 " + tried + " 台机器，都没能替《" + entry.track.name
-                    + "》找到别的平台的可播版本");
+            // 分层问完、换源也没人能接：以当前这批成员，这首放不了。提示与后续处理都在那里。
+            markUnresolvable(entry, tried);
             return;
         }
         long window = Math.max(250L, cfg.switchRescueWindowMs);
@@ -1621,8 +1648,15 @@ public final class Room {
         msg.addProperty("deadlineMs", System.currentTimeMillis() + window);
         send(next, msg);
         Member m = members.get(next);
-        notice("房间里没人能放《" + entry.track.name + "》，正在问"
-                + (m == null ? "别的成员" : m.name) + "换别的平台版本…");
+        String who = m == null ? "别的成员" : m.name;
+        // 每首最多说一次；空闲歌全程静默（频道里可能有上百人，这不是成员能处理的事）。
+        if (entry.tier != QueueEntry.TIER_IDLE && !entry.rescueAnnounced) {
+            entry.rescueAnnounced = true;
+            notice("房间里没人能放《" + entry.track.name + "》，正在问" + who + "换别的平台版本…");
+        } else {
+            System.out.println("[mpsync] 换源派单 entry=" + entry.entryId + " 《" + entry.track.name
+                    + "》 → " + who + "（第 " + entry.rescueAttempts() + " 台）");
+        }
     }
 
     /** 下一个该派谁：在线 + 有流水线 + 还没派过，按命中率择优。都没有返回 null。 */
@@ -1680,7 +1714,9 @@ public final class Room {
         if (entry.track.hasFreshUrl()) { entry.closeRescue(); return; }
         if (now - entry.rescueSince <= Math.max(250L, cfg.switchRescueWindowMs)) return;
         Member m = members.get(target);
-        notice("没等到" + (m == null ? "那台机器" : m.name) + "的换源结果，再问下一台…");
+        // 只记日志：这是过程信息，换源成了房间自然出声，都没成会有一句汇总（markUnresolvable）。
+        System.out.println("[mpsync] 换源超时 entry=" + entry.entryId + " 《" + entry.track.name
+                + "》 没等到 " + (m == null ? "?" : m.name) + " 的结果，改问下一台");
         dispatchRescue(entry);
     }
 
@@ -2247,6 +2283,109 @@ public final class Room {
         advanceAsk(entry, tier + 1, true);
     }
 
+    /**
+     * 当前这首等不到链接：跳过。两条路会走到这里 —— 总闸 {@link MpConfig#urlWaitTimeoutMs} 到点，
+     * 以及 {@link #flushUnresolvable} 已经确认「问完一圈、换源也没人接」（那就不必再空等到总闸）。
+     */
+    private void skipUnresolvableCurrent() {
+        waitingUrl = false;
+        String title = current != null ? current.track.name : "";
+        if (idle != null && current != null && current.tier == QueueEntry.TIER_IDLE) {
+            // 空闲歌解析不出来：记一笔冷却，只打日志不广播 —— 频道里可能有上百人，
+            // 一张解析不了的空闲单会把「已跳过」刷满每个人的聊天栏，而这不是任何成员能处理的事。
+            // 没人在线时等不到链接是理所当然，不算这首歌的错，不记冷却。
+            if (anyOnline()) idle.failed(current.track.key());
+            Net.warn("[mpsync] 空闲歌单《" + title + "》解析不出播放地址，已跳过", null);
+        } else {
+            // 走到这里说明房间里没有一个成员能解析出这首歌的完整音频（会员曲而在场都不是会员，
+            // 或者这首歌本身已下架）。把原因说明白，否则看起来像是服务端坏了。
+            notice("房间里没有成员能解析出《" + title + "》的完整播放地址（可能需要会员或已下架），已跳过");
+        }
+        next(false);
+    }
+
+    /**
+     * 判定：分层问完了，换源也没人接 —— 以当前这批成员，这首歌放不了。
+     *
+     * <p>只登记，不动队列（见 {@link #unresolvablePending}）。之后：</p>
+     * <ul>
+     *   <li>前瞻窗不再反复去问它，直到成员变了（{@link #rosterVersion}）—— 以前每 30 秒就把分层
+     *       与换源整套重走一遍，每走一遍就向全房广播一句「问过了 N 台机器」，队首两首都放不了时
+     *       两句话交替刷屏；</li>
+     *   <li>空闲歌、歌单里的歌由 {@link #flushUnresolvable} 移出队列，不等轮到它们再空等总闸；</li>
+     *   <li>玩家逐首点的歌留着，只提示一次 —— 点歌人还能自己换个平台重点；</li>
+     *   <li>正在等链接的当前曲目由 {@link #flushUnresolvable} 立即跳过。</li>
+     * </ul>
+     */
+    private void markUnresolvable(QueueEntry entry, int tried) {
+        entry.unresolvableAt = rosterVersion;
+        System.out.println("[mpsync] 判定放不了 entry=" + entry.entryId + " 《" + entry.track.name
+                + "》 tier=" + entry.tier + " 换源问过 " + tried + " 台");
+        if (!unresolvablePending.contains(entry)) unresolvablePending.add(entry);
+        // 空闲歌全程静默；队里的歌单歌移出时自己会说一句（flushUnresolvable）。
+        if (entry.tier == QueueEntry.TIER_IDLE || entry.failureAnnounced) return;
+        if (entry != current && entry.tier == QueueEntry.TIER_PLAYLIST) return;
+        // 正在放、只是后台续期链接没成：歌还在响，说「没人能放」只会让人困惑。
+        if (entry == current && !waitingUrl) return;
+        // 当前曲目与玩家逐首点的歌：说一次就够。当前曲目紧接着会被跳过，队里的留到轮到它时。
+        entry.failureAnnounced = true;
+        String what = tried > 0
+                ? "问过了 " + tried + " 台机器，都没能替《" + entry.track.name + "》找到别的平台的可播版本"
+                : "房间里没人能放《" + entry.track.name + "》（可能需要会员或已下架）";
+        notice(entry == current ? what : what + "，轮到它时会跳过");
+    }
+
+    /**
+     * 处理 {@link #unresolvablePending}。每个 tick 开头调用 —— 那时没有任何对队列的遍历在进行。
+     *
+     * <p>服主给这个平台配了 Token 时，服务端那一路是<b>异步</b>的，可能比「问完一圈」来得晚：
+     * 等满 {@link MpConfig#serverResolveTimeoutMs} 再下结论，免得把一首其实能放的歌删掉。</p>
+     *
+     * @return 是否换了歌（调用方据此结束本 tick）
+     */
+    private boolean flushUnresolvable(long now) {
+        if (unresolvablePending.isEmpty()) return false;
+        List<QueueEntry> batch = new ArrayList<>(unresolvablePending);
+        unresolvablePending.clear();
+        List<QueueEntry> notYet = new ArrayList<>();
+        boolean dropped = false;
+        boolean skipCurrent = false;
+        for (QueueEntry e : batch) {
+            boolean live = e == current || queue.contains(e);
+            if (!live || e.track.hasFreshUrl() || !unresolvable(e)) continue;   // 已解决 / 已离队 / 成员已变
+            if (cfg.hasServerToken(e.track.source) && now - e.resolveStartedAt < cfg.serverResolveTimeoutMs) {
+                notYet.add(e);
+                continue;
+            }
+            if (e == current) {
+                if (waitingUrl) skipCurrent = true;
+                continue;
+            }
+            if (e.tier == QueueEntry.TIER_IDLE) {
+                queue.remove(e);
+                dropped = true;
+                // 空闲歌：静默。频道里可能有上百人，这不是任何成员能处理的事。
+                if (idle != null && anyOnline()) idle.failed(e.track.key());
+                Net.warn("[mpsync] 空闲歌单《" + e.track.name + "》房间里没人能放，已跳过", null);
+            } else if (e.tier == QueueEntry.TIER_PLAYLIST) {
+                queue.remove(e);
+                dropped = true;
+                notice("房间里没人能播放《" + e.track.name + "》（可能需要会员或已下架），已从歌单移出");
+            }
+        }
+        unresolvablePending.addAll(notYet);
+        if (skipCurrent) {
+            skipUnresolvableCurrent();
+            return true;
+        }
+        boolean added = topUpIdle(false);
+        if (dropped || added) {
+            invalidatePlanIfHeadChanged();
+            broadcastQueue();
+        }
+        return false;
+    }
+
     public void tick() {
         long now = System.currentTimeMillis();
 
@@ -2254,21 +2393,11 @@ public final class Room {
         // 免得同一 tick 里「自动进下一首」和「投票切歌」各切一次。
         tickVotes(now);
 
+        // 上一轮判定为「没人能放」的条目在这里统一处理：此刻没有任何对队列的遍历在进行。
+        if (flushUnresolvable(now)) return;
+
         if (waitingUrl && now - waitingSince > cfg.urlWaitTimeoutMs) {
-            waitingUrl = false;
-            String title = current != null ? current.track.name : "";
-            if (idle != null && current != null && current.tier == QueueEntry.TIER_IDLE) {
-                // 空闲歌解析不出来：记一笔冷却，只打日志不广播 —— 频道里可能有上百人，
-                // 一张解析不了的空闲单会把「已跳过」刷满每个人的聊天栏，而这不是任何成员能处理的事。
-                // 没人在线时等不到链接是理所当然，不算这首歌的错，不记冷却。
-                if (anyOnline()) idle.failed(current.track.key());
-                Net.warn("[mpsync] 空闲歌单《" + title + "》解析不出播放地址，已跳过", null);
-            } else {
-                // 走到这里说明房间里没有一个成员能解析出这首歌的完整音频（会员曲而在场都不是会员，
-                // 或者这首歌本身已下架）。把原因说明白，否则看起来像是服务端坏了。
-                notice("房间里没有成员能解析出《" + title + "》的完整播放地址（可能需要会员），已跳过");
-            }
-            next(false);
+            skipUnresolvableCurrent();
             return;
         }
 

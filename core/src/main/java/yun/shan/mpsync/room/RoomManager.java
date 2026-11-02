@@ -752,6 +752,8 @@ public final class RoomManager {
                     // 很可能就是在这第一次 profile 里才到齐的，而换歌时的指派发生在它之前 ——
                     // 不补这一下，房间里明明有能算的机器也会被判成「没人能算」。
                     if (room != null) {
+                        // 档案里的共享会员 / LX / 换源能力可能变了：之前「没人能放」的判定作废。
+                        room.onProfileChanged();
                         room.refreshAnalyst();
                         room.broadcastState();
                     }
