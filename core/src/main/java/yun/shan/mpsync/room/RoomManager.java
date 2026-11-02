@@ -136,7 +136,15 @@ public final class RoomManager {
     }
 
     public boolean isServerAdmin(UUID uuid) {
-        return uuid != null && operators.contains(uuid);
+        if (uuid == null) return false;
+        if (operators.contains(uuid)) return true;
+        // 平台能直接回答的话（Paper），不必等他先敲一次 /mp：握手时下发的 serverAdmin 就是对的。
+        MpPlatform p = Net.platform();
+        try {
+            return p != null && p.isOperator(uuid);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     // ── 封禁 ─────────────────────────────────────────────────────────────────

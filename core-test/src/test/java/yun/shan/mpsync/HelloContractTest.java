@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -123,5 +124,13 @@ class HelloContractTest {
         MpParty.onPacket(player, new byte[0]);
         MpParty.onPacket(null, Proto.encode(Proto.msg(Proto.C_HELLO)));
         // 没抛异常就算过：网络上什么都可能来。
+    }
+
+    @Test
+    void helloRecognisesAdminsThePlatformKnowsWithoutAPriorCommand() {
+        assertFalse(sayHello().get("serverAdmin").getAsBoolean());
+        host.operators.add(player);   // 平台（Paper 的 isOp / mpsync.admin）认得他，但他还没敲过 /mp
+        assertTrue(sayHello().get("serverAdmin").getAsBoolean(),
+                "客户端只在握手时读一次 serverAdmin：握手时认不出，频道里的管理按钮就一直不出现");
     }
 }

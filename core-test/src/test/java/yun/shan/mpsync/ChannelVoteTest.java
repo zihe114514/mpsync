@@ -256,4 +256,20 @@ class ChannelVoteTest {
         MpParty.onPacket(admin, Proto.encode(Proto.msg(Proto.C_NEXT)));
         assertEquals("二", ch.current().track.name, "管理员要能收拾场面，不必陪着投票");
     }
+
+    @Test
+    void anAdminKnownToThePlatformControlsTheChannelWithoutRunningACommandFirst() {
+        UUID op = host.addPlayer("Op");
+        host.operators.add(op);       // 没有 noteOperator：他进服后一条 /mp 都没敲过
+        Room ch = channelWithEveryone();
+        manager.joinChannel(op);
+        assertTrue(ch.controls(op), "平台认得的管理员一进来就有频道的管理权");
+        ch.enqueue(admin, "Admin", playable("1", "一"), false);
+        ch.enqueue(admin, "Admin", playable("2", "二"), false);
+        host.clear();
+        MpParty.onPacket(op, Proto.encode(Proto.msg(Proto.C_NEXT)));
+        assertEquals("二", ch.current().track.name, "管理员按下一首是直接切，不发起投票");
+        assertNull(host.last(Proto.S_VOTE));
+        assertFalse(ch.controls(a), "普通成员不受影响");
+    }
 }

@@ -32,6 +32,8 @@ public final class FakePlatform implements MpPlatform {
     public final List<String> chat = new ArrayList<>();
     /** 置 false 可以模拟「客户端没声明通道」。 */
     public boolean canSend = true;
+    /** 平台层认定的服务器管理员（模拟 Paper 的 isOp / mpsync.admin）。 */
+    public final java.util.Set<UUID> operators = new java.util.HashSet<>();
 
     public UUID addPlayer(String name) {
         UUID uuid = UUID.randomUUID();
@@ -62,6 +64,8 @@ public final class FakePlatform implements MpPlatform {
     @Override public void execute(Runnable task) { task.run(); }
 
     @Override public void warn(String message, Throwable t) { }
+
+    @Override public boolean isOperator(UUID uuid) { return operators.contains(uuid); }
 
     // ── 断言辅助 ──────────────────────────────────────────────────────────────
 

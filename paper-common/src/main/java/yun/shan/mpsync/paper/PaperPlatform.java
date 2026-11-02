@@ -91,4 +91,14 @@ public final class PaperPlatform implements MpPlatform {
         for (Player p : Bukkit.getOnlinePlayers()) out.add(p.getName());
         return out;
     }
+
+    /**
+     * 与 {@code MpCommand} 同一判据：OP 或持有 {@code mpsync.admin}。让握手时下发的 serverAdmin 就是对的，
+     * 管理员不必先敲一次 /mp，频道里的管理按钮就会出现。权限查询（LuckPerms 等）与 OP 表都可在引擎线程上读。
+     */
+    @Override
+    public boolean isOperator(UUID uuid) {
+        Player p = uuid == null ? null : Bukkit.getPlayer(uuid);
+        return p != null && (p.isOp() || p.hasPermission("mpsync.admin"));
+    }
 }
