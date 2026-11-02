@@ -33,6 +33,8 @@ public final class MpCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        return MpTextCommands.suggest(args, platform.onlineNames());
+        // Paper 在补全时拿得到管理员身份（与 onCommand 同一判据），管理员子命令也一并补出来。
+        boolean operator = sender.isOp() || sender.hasPermission("mpsync.admin");
+        return MpTextCommands.suggest(args, platform.onlineNames(), operator);
     }
 }

@@ -233,6 +233,11 @@ public final class Room {
 
     public void setServerResolve(ServerResolve hook) { this.serverResolve = hook; }
 
+    /** 频道的空闲歌单（只对频道生效），见 {@link #topUpIdle()}。 */
+    private IdleSource idle;
+
+    public void setIdleSource(IdleSource source) { this.idle = source; }
+
     /** 注入「服务器管理员」判据。频道的管理权全靠它。 */
     public void setServerAdmin(Predicate<UUID> check) {
         if (check != null) this.serverAdmin = check;
@@ -296,6 +301,7 @@ public final class Room {
             m.name = name;
         }
         m.online = true;
+        m.offlineSince = 0L;
         m.lastSeen = System.currentTimeMillis();
         allOfflineSince = 0L;
         // 新来的这台可能正好是房间里唯一能算的机器（点歌人自己进来、或他带了模型）。
@@ -334,6 +340,7 @@ public final class Room {
         if (m == null) return;
         m.online = false;
         m.listening = false;
+        m.offlineSince = System.currentTimeMillis();
         if (members.values().stream().noneMatch(x -> x.online)) {
             allOfflineSince = System.currentTimeMillis();
         }
@@ -422,6 +429,8 @@ public final class Room {
         if (current != null && current.track.key().equals(track.key())) {
             throw new IllegalStateException("这首歌正在播放");
         }
+        // 点的正好是队里一首空闲歌：那是服务器自己补的，不该挡住玩家 —— 抽掉它，按玩家点歌重新排。
+        queue.removeIf(e -> e.tier == QueueEntry.TIER_IDLE && e.track.key().equals(track.key()));
         for (QueueEntry e : queue) {
             // 按 source:songId 比，而不是只比 songId：跨平台之后不同平台会撞到相同的数字 id。
             if (e.track.key().equals(track.key())) throw new IllegalStateException("这首歌已经在队列里了");
@@ -490,6 +499,10 @@ public final class Room {
                 ? "未命名歌单" : playlistName.trim();
         if (label.length() > 80) label = label.substring(0, 80);
 
+        // 有人灌了一整张单，队里待播的空闲歌就没必要留着了（它们排在队尾、还会和这张单撞重）。
+        // 正在放的那首空闲歌不动，照常放完；这张单放完、队列又快空时 topUpIdle 会再补。
+        boolean droppedIdle = queue.removeIf(e -> e.tier == QueueEntry.TIER_IDLE);
+
         int limit = cfg.playlistBatchLimit > 0
                 ? Math.min(cfg.playlistBatchLimit, tracks.size()) : tracks.size();
         // 已经在队上的 / 正在播的那些 key 先收进一个集合：否则每灌一首都要扫一遍整队，
@@ -530,6 +543,7 @@ public final class Room {
             }
         }
         if (added == 0) {
+            if (droppedIdle) broadcastQueue();   // 空闲歌已经抽掉了，客户端的队列要跟上
             throw new IllegalStateException(firstReason(duplicate, invalid, noLength));
         }
         boolean truncated = limit < tracks.size();
@@ -540,6 +554,8 @@ public final class Room {
             startEntry(pollFront(queue.get(0)), 0L);
         } else {
             // 队首没动（灌单不插队），所以这里只是把新快照推给全房，然后按前瞻窗开始要链接。
+            // 例外是队首本来是一首空闲歌、刚被抽掉 —— 那队首就变了，挂在 current 上的计划要作废。
+            if (droppedIdle) invalidatePlanIfHeadChanged();
             broadcastQueue();
             resolveLookahead();
         }
@@ -610,6 +626,80 @@ public final class Room {
         int at = 0;
         while (at < queue.size() && queue.get(at).tier <= tier) at++;
         return at;
+    }
+
+    // ── 频道空闲歌单 ─────────────────────────────────────────────────────────
+    //
+    // 空闲歌以最末档 TIER_IDLE 入队：玩家点的歌（包括整张歌单）靠 insertAt 天然排在它们前面，
+    // 于是「有人点歌先放点的，没人点才放空闲单」不需要任何额外判断。正在放的空闲歌不会被
+    // 点歌打断 —— 它放完才轮到队首。链接走现有的分层求助：点歌人为 null，「问点歌人」那一层自然跳过。
+
+    private boolean idleActive() {
+        return idle != null && channel() && idle.active() && anyOnline();
+    }
+
+    private boolean anyOnline() {
+        for (Member m : members.values()) if (m.online) return true;
+        return false;
+    }
+
+    /**
+     * 队列不足 {@link MpConfig#idleQueueLead} 首时从空闲歌单补到这个数。
+     *
+     * <p>提前备好一两首而不是轮到才补：前瞻窗要提前问链接、房间交叠要知道「下一首」，
+     * 队列里一首都没有的话每次换歌都是硬切，还要现等一轮解析。频道里没有在线的人就不补 ——
+     * 没人听还去要链接只是白烧别人的解析额度。</p>
+     *
+     * @param broadcast 补了之后要不要立刻广播歌单；调用方紧接着就要换歌时传 false（换歌会自己广播）
+     */
+    private boolean topUpIdle(boolean broadcast) {
+        if (!idleActive()) return false;
+        int lead = Math.max(1, cfg.idleQueueLead);
+        if (queue.size() >= lead) return false;
+        java.util.Set<String> keys = new java.util.HashSet<>();
+        if (current != null) keys.add(current.track.key());
+        for (QueueEntry e : queue) keys.add(e.track.key());
+        boolean added = false;
+        while (queue.size() < lead) {
+            Track t = idle.next(keys);
+            if (t == null) break;
+            keys.add(t.key());
+            QueueEntry e = new QueueEntry(t, null, cfg.idleRequesterName);
+            e.tier = QueueEntry.TIER_IDLE;
+            e.playlist = idle.label();
+            queue.add(e);   // 最末档，永远在队尾
+            added = true;
+        }
+        if (added && broadcast) {
+            invalidatePlanIfHeadChanged();
+            broadcastQueue();
+        }
+        return added;
+    }
+
+    /** 半秒一次：补歌，以及频道停着时把空闲歌起播。 */
+    private void tickIdle() {
+        if (idle == null || !channel()) return;
+        boolean stopped = current == null;
+        boolean added = topUpIdle(!stopped);
+        // 只在「停着」时起播：暂停时 current 仍在，那是管理员按的，不替他做主。
+        if (stopped && !queue.isEmpty() && queue.get(0).tier == QueueEntry.TIER_IDLE && idleActive()) {
+            next(false);
+            // 起播从队里取走了一首，立刻补回「下一首」，前瞻解析不必等下一个节拍。
+            topUpIdle(true);
+        } else if (stopped && added) {
+            broadcastQueue();
+        }
+    }
+
+    /** 把队里待播的空闲歌全部撤掉（关掉空闲歌单 / 换了一张单时）。正在放的那首不动。 */
+    public boolean dropIdleEntries() {
+        boolean removed = queue.removeIf(e -> e.tier == QueueEntry.TIER_IDLE);
+        if (removed) {
+            invalidatePlanIfHeadChanged();
+            broadcastQueue();
+        }
+        return removed;
     }
 
     private QueueEntry pollFront(QueueEntry expected) {
@@ -1207,6 +1297,12 @@ public final class Room {
             startEntry(current, 0L);
             return;
         }
+        // 一首空闲歌自然放完：告诉歌单「这张单还放得动」，连续失败计数归零。
+        if (auto && idle != null && current != null && current.tier == QueueEntry.TIER_IDLE) {
+            idle.played(current.track.key());
+        }
+        // 队列已空就先从空闲歌单补一首 —— 否则下面会直接 stop()，频道安静到下一次 tick 补歌。
+        if (queue.isEmpty()) topUpIdle(false);
         if (!queue.isEmpty()) {
             // 入口点必须先算：plannedCue 要用「即将播的那一首」的曲长做夹取，
             // 而 queue.remove(0) 一执行，队首就换成再下一首了。
@@ -2161,9 +2257,17 @@ public final class Room {
         if (waitingUrl && now - waitingSince > cfg.urlWaitTimeoutMs) {
             waitingUrl = false;
             String title = current != null ? current.track.name : "";
-            // 走到这里说明房间里没有一个成员能解析出这首歌的完整音频（会员曲而在场都不是会员，
-            // 或者这首歌本身已下架）。把原因说明白，否则看起来像是服务端坏了。
-            notice("房间里没有成员能解析出《" + title + "》的完整播放地址（可能需要会员），已跳过");
+            if (idle != null && current != null && current.tier == QueueEntry.TIER_IDLE) {
+                // 空闲歌解析不出来：记一笔冷却，只打日志不广播 —— 频道里可能有上百人，
+                // 一张解析不了的空闲单会把「已跳过」刷满每个人的聊天栏，而这不是任何成员能处理的事。
+                // 没人在线时等不到链接是理所当然，不算这首歌的错，不记冷却。
+                if (anyOnline()) idle.failed(current.track.key());
+                Net.warn("[mpsync] 空闲歌单《" + title + "》解析不出播放地址，已跳过", null);
+            } else {
+                // 走到这里说明房间里没有一个成员能解析出这首歌的完整音频（会员曲而在场都不是会员，
+                // 或者这首歌本身已下架）。把原因说明白，否则看起来像是服务端坏了。
+                notice("房间里没有成员能解析出《" + title + "》的完整播放地址（可能需要会员），已跳过");
+            }
             next(false);
             return;
         }
@@ -2207,6 +2311,8 @@ public final class Room {
         // 每半秒把同一首歌再问一遍。
         if (++lookaheadCounter >= 10) {
             lookaheadCounter = 0;
+            // 空闲歌单的补歌与「频道停着就起播」跟前瞻窗同一个半秒节拍：补进来的曲子紧接着就能被前瞻窗问到。
+            tickIdle();
             if (!waitingUrl) resolveLookahead();
         }
 

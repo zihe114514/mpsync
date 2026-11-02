@@ -16,6 +16,11 @@ public final class QueueEntry {
     public static final int TIER_REQUEST = 1;
     /** 整张歌单灌进来的待播歌 —— 谁都能插到它前面。 */
     public static final int TIER_PLAYLIST = 2;
+    /**
+     * 频道空闲歌单自动补进来的——最末档，任何人点的歌（包括整张歌单）都排在它前面。
+     * 只在服务端内部使用，不下发给客户端（{@link #toJson} 不带 tier）。
+     */
+    public static final int TIER_IDLE = 3;
 
     private static final AtomicLong SEQ = new AtomicLong(1L);
 

@@ -6,6 +6,8 @@ import yun.shan.mpsync.ban.BanEntry;
 import yun.shan.mpsync.net.Net;
 import yun.shan.mpsync.net.Proto;
 import yun.shan.mpsync.presence.ClientProfile;
+import yun.shan.mpsync.config.MpConfig;
+import yun.shan.mpsync.room.IdlePlaylist;
 import yun.shan.mpsync.room.Member;
 import yun.shan.mpsync.room.QueueEntry;
 import yun.shan.mpsync.room.Room;
@@ -34,26 +36,54 @@ public final class MpTextCommands {
 
     private MpTextCommands() {}
 
-    /** Subcommands offered for tab completion (excluding the op-only {@code list}). */
+    /** Subcommands offered for tab completion to everyone. */
     public static final List<String> SUBCOMMANDS = List.of(
             "create", "join", "leave", "disband", "invite", "admin", "unadmin", "kick",
             "transfer", "pause", "resume", "skip", "prev", "clear", "seek", "repeat",
             "play", "info", "queue", "channel", "public", "agree", "deny", "vote",
-            "who", "help");
+            "who", "autojoin", "help");
 
-    /** Completion candidates for {@code /mp <args...>}. */
+    /** 只对服务器管理员补全的子命令（适配层用 {@link #suggest(String[], List, boolean)} 传入身份时生效）。 */
+    public static final List<String> ADMIN_SUBCOMMANDS = List.of("idle", "ban", "unban", "bans", "list");
+
+    private static final List<String> IDLE_ACTIONS =
+            List.of("save", "add", "on", "off", "shuffle", "list", "clear");
+
+    /**
+     * Completion candidates for {@code /mp <args...>}，按普通玩家补全。
+     *
+     * <p>保留这个签名：各加载器的适配层都在调它，而在补全时拿权限的 API 各版本变过好几次，
+     * 能轻松拿到的平台（Paper）改调下面那个重载即可。</p>
+     */
     public static List<String> suggest(String[] args, List<String> onlineNames) {
+        return suggest(args, onlineNames, false);
+    }
+
+    /** @param operator 调用者是不是服务器管理员；是就把管理员子命令也补出来 */
+    public static List<String> suggest(String[] args, List<String> onlineNames, boolean operator) {
         if (args.length <= 1) {
             String prefix = args.length == 0 ? "" : args[0].toLowerCase(Locale.ROOT);
             List<String> out = new ArrayList<>();
             for (String s : SUBCOMMANDS) if (s.startsWith(prefix)) out.add(s);
+            if (operator) for (String s : ADMIN_SUBCOMMANDS) if (s.startsWith(prefix)) out.add(s);
             return out;
         }
+        String sub = args[0].toLowerCase(Locale.ROOT);
+        if (args.length == 3) {
+            String prefix = args[2].toLowerCase(Locale.ROOT);
+            boolean onOff = (sub.equals("autojoin") && operator && args[1].equalsIgnoreCase("server"))
+                    || (sub.equals("idle") && operator && args[1].equalsIgnoreCase("shuffle"));
+            return onOff ? startingWith(List.of("on", "off"), prefix) : List.of();
+        }
         if (args.length == 2) {
-            switch (args[0].toLowerCase(Locale.ROOT)) {
+            String prefix = args[1].toLowerCase(Locale.ROOT);
+            if (sub.equals("autojoin")) {
+                return startingWith(operator ? List.of("on", "off", "server") : List.of("on", "off"), prefix);
+            }
+            if (sub.equals("idle")) return operator ? startingWith(IDLE_ACTIONS, prefix) : List.of();
+            switch (sub) {
                 case "invite": case "admin": case "unadmin": case "kick": case "transfer": {
                     List<String> out = new ArrayList<>();
-                    String prefix = args[1].toLowerCase(Locale.ROOT);
                     if (onlineNames != null) {
                         for (String n : onlineNames) {
                             if (n.toLowerCase(Locale.ROOT).startsWith(prefix)) out.add(n);
@@ -66,7 +96,6 @@ public final class MpTextCommands {
                 case "vote": return List.of("skip", "kick");
                 case "ban": case "unban": {
                     List<String> out = new ArrayList<>();
-                    String prefix = args[1].toLowerCase(Locale.ROOT);
                     if (onlineNames != null) {
                         for (String n : onlineNames) {
                             if (n.toLowerCase(Locale.ROOT).startsWith(prefix)) out.add(n);
@@ -78,6 +107,12 @@ public final class MpTextCommands {
             }
         }
         return List.of();
+    }
+
+    private static List<String> startingWith(List<String> options, String prefix) {
+        List<String> out = new ArrayList<>();
+        for (String s : options) if (s.startsWith(prefix)) out.add(s);
+        return out;
     }
 
     public static List<String> run(UUID actor, boolean operator, String[] args) {
@@ -176,6 +211,11 @@ public final class MpTextCommands {
             case "list":
                 if (!operator) return List.of("只有管理员可以查看全部房间");
                 return list(manager);
+            case "idle":
+                if (!operator) return List.of("只有服务器管理员可以管理频道空闲歌单");
+                return idle(manager, actor, args);
+            case "autojoin":
+                return autojoin(manager, actor, operator, args);
             case "help": default: return help();
         }
     }
@@ -345,6 +385,129 @@ public final class MpTextCommands {
         return out;
     }
 
+    /**
+     * {@code /mp idle ...}：频道空闲歌单。直接调 manager 而不是构造协议帧 —— 这是只有管理员在聊天栏
+     * 用的服务端设施，客户端没有对应的界面，也就不该为它扩线协议（同 {@code /mp ban}）。
+     */
+    private static List<String> idle(RoomManager manager, UUID actor, String[] args) {
+        IdlePlaylist idle = manager.idle();
+        String sub = args.length < 2 ? "info" : args[1].toLowerCase(Locale.ROOT);
+        try {
+            switch (sub) {
+                case "save": case "add": {
+                    boolean append = sub.equals("add");
+                    Room src = manager.roomOf(actor);
+                    String from = src == null ? "服务器频道" : src.name;
+                    int n = manager.saveIdleFrom(actor, append ? null : (args.length > 2 ? join(args, 2) : null), append);
+                    List<String> out = new ArrayList<>();
+                    out.add(append
+                            ? "已从「" + from + "」追加 " + n + " 首（重复的已跳过），空闲歌单现有 " + idle.size() + " 首"
+                            : "已把「" + from + "」里的 " + n + " 首歌存为空闲歌单「" + idle.name() + "」"
+                                    + (idle.enabled() ? "" : "，输入 /mp idle on 开启"));
+                    if (src != null && !src.channel()) {
+                        out.add("这个房间可以 /mp disband 解散了，再 /mp channel 回到频道");
+                    }
+                    return out;
+                }
+                case "on":
+                    if (idle.size() == 0) {
+                        return List.of("空闲歌单是空的：先 /mp create 建房、用「播放歌单」灌进去，再 /mp idle save");
+                    }
+                    manager.setIdleEnabled(true);
+                    return List.of("空闲歌单已开启：频道没人点歌时会自动播放「" + idle.name() + "」");
+                case "off":
+                    manager.setIdleEnabled(false);
+                    return List.of("空闲歌单已关闭（正在放的这首会放完）");
+                case "shuffle": {
+                    if (args.length < 3) return List.of("用法：/mp idle shuffle <on|off>");
+                    boolean on = isOn(args[2]);
+                    idle.setShuffle(on);
+                    return List.of("空闲歌单已切换为" + (on ? "随机" : "顺序") + "播放");
+                }
+                case "clear":
+                    manager.clearIdle();
+                    return List.of("空闲歌单已清空并关闭");
+                case "list": {
+                    if (idle.size() == 0) return List.of("空闲歌单是空的");
+                    List<String> out = new ArrayList<>();
+                    out.add("空闲歌单「" + idle.name() + "」接下来（共 " + idle.size() + " 首）：");
+                    int i = 1;
+                    for (String s : idle.upcoming(20)) out.add(i++ + ". " + s);
+                    return out;
+                }
+                case "info": default: {
+                    List<String> out = new ArrayList<>();
+                    long paused = idle.pausedRemainingMs();
+                    out.add("空闲歌单「" + idle.name() + "」：" + (idle.enabled() ? "开启" : "关闭")
+                            + (idle.enabled() && paused > 0 ? "（连续解析失败，暂停中，还剩 "
+                                    + Math.max(1L, paused / 60_000L) + " 分钟）" : "")
+                            + "，" + idle.size() + " 首，" + (idle.shuffle() ? "随机" : "顺序") + "播放");
+                    out.add("频道自动加入：" + (manager.config().channelAutoJoin ? "开启" : "关闭"));
+                    out.add("/mp idle save [名字] | add | on | off | shuffle <on|off> | list | clear");
+                    return out;
+                }
+            }
+        } catch (IllegalStateException e) {
+            return List.of(e.getMessage());
+        }
+    }
+
+    /**
+     * {@code /mp autojoin ...}：
+     * <ul>
+     *   <li>{@code /mp autojoin} —— 看自己和全服的状态；</li>
+     *   <li>{@code /mp autojoin on|off} —— 玩家自己的开关，人人可用；</li>
+     *   <li>{@code /mp autojoin server on|off} —— 全服开关，仅管理员，写回 mpsync.json。</li>
+     * </ul>
+     */
+    private static List<String> autojoin(RoomManager manager, UUID actor, boolean operator, String[] args) {
+        MpConfig cfg = manager.config();
+        boolean serverOn = cfg.channelAutoJoin && cfg.channelEnabled;
+        if (args.length < 2) {
+            List<String> out = new ArrayList<>();
+            out.add("服务器频道自动加入：" + (serverOn ? "开启" : "关闭")
+                    + "；你的设置：" + (manager.optedOutOfAutoJoin(actor) ? "关闭" : "开启"));
+            out.add("/mp autojoin on|off  开关你自己的进服自动加入"
+                    + (operator ? "；/mp autojoin server on|off  全服开关" : ""));
+            return out;
+        }
+        if (args[1].equalsIgnoreCase("server")) {
+            if (!operator) return List.of("只有服务器管理员可以设置全服自动加入");
+            return autojoinServer(manager, args);
+        }
+        boolean on = isOn(args[1]);
+        boolean joined = manager.setPersonalAutoJoin(actor, on);
+        if (!on) return List.of("已关闭你的进服自动加入频道（当前在频道里的话用 /mp leave 离开）");
+        if (!serverOn) return List.of("已打开你的进服自动加入，不过服务器当前没有开启这个功能");
+        return List.of("已打开你的进服自动加入频道" + (joined ? "，已把你放进频道" : ""));
+    }
+
+    /** {@code /mp autojoin server on|off}：切换全服自动加入并写回 mpsync.json。 */
+    private static List<String> autojoinServer(RoomManager manager, String[] args) {
+        MpConfig cfg = manager.config();
+        if (args.length < 3) {
+            return List.of("全服自动加入：" + (cfg.channelAutoJoin ? "开启" : "关闭") + "  —— /mp autojoin server <on|off>");
+        }
+        boolean on = isOn(args[2]);
+        cfg.channelAutoJoin = on;
+        boolean saved = MpParty.saveConfig();
+        List<String> out = new ArrayList<>();
+        out.add("全服频道自动加入已" + (on ? "开启" : "关闭")
+                + (saved ? "（已写入 mpsync.json）" : "（本次运行有效，配置文件未写入）"));
+        if (on && !cfg.channelEnabled) {
+            out.add("注意：服务器频道当前是关闭的（channelEnabled=false），自动加入不会生效");
+        } else if (on) {
+            int n = manager.autoJoinOnlineNow();
+            if (n > 0) out.add("已把当前在线的 " + n + " 位客户端玩家放进频道");
+        }
+        return out;
+    }
+
+    private static boolean isOn(String s) {
+        String v = s == null ? "" : s.trim().toLowerCase(Locale.ROOT);
+        return v.equals("on") || v.equals("true") || v.equals("1") || v.equals("开") || v.equals("是");
+    }
+
     private static List<String> help() {
         return List.of(
                 "一起听指令：",
@@ -361,7 +524,10 @@ public final class MpTextCommands {
                 "/mp vote skip | /mp vote kick <玩家>    频道内发起投票",
                 "/mp agree | /mp deny      对进行中的投票表态",
                 "/mp info | /mp queue | /mp who         房间信息 | 歌单 | 在线在听",
+                "/mp autojoin [on|off]     你自己的进服自动加入频道开关",
                 "管理员：/mp ban <玩家> <原因> <时长> | /mp unban <玩家> | /mp bans | /mp list",
+                "管理员：/mp idle [save|add|on|off|shuffle|list|clear]   频道空闲歌单",
+                "管理员：/mp autojoin server <on|off>   全服：装了客户端的玩家进服自动加入频道",
                 "点歌与切歌请在音乐播放器界面操作（需安装支持一起听的客户端 mod）");
     }
 
