@@ -44,7 +44,7 @@ public final class MpTextCommands {
             "who", "autojoin", "help");
 
     /** 只对服务器管理员补全的子命令（适配层用 {@link #suggest(String[], List, boolean)} 传入身份时生效）。 */
-    public static final List<String> ADMIN_SUBCOMMANDS = List.of("idle", "ban", "unban", "bans", "list");
+    public static final List<String> ADMIN_SUBCOMMANDS = List.of("status", "idle", "ban", "unban", "bans", "list");
 
     private static final List<String> IDLE_ACTIONS =
             List.of("save", "add", "on", "off", "shuffle", "list", "clear");
@@ -81,6 +81,7 @@ public final class MpTextCommands {
                 return startingWith(operator ? List.of("on", "off", "server") : List.of("on", "off"), prefix);
             }
             if (sub.equals("idle")) return operator ? startingWith(IDLE_ACTIONS, prefix) : List.of();
+            if (sub.equals("status")) return operator ? startingWith(List.of("list"), prefix) : List.of();
             switch (sub) {
                 case "invite": case "admin": case "unadmin": case "kick": case "transfer": {
                     List<String> out = new ArrayList<>();
@@ -211,6 +212,9 @@ public final class MpTextCommands {
             case "list":
                 if (!operator) return List.of("只有管理员可以查看全部房间");
                 return list(manager);
+            case "status":
+                if (!operator) return List.of("只有服务器管理员可以查看连接状态");
+                return args.length > 1 && args[1].equalsIgnoreCase("list") ? statusList(manager) : status(manager);
             case "idle":
                 if (!operator) return List.of("只有服务器管理员可以管理频道空闲歌单");
                 return idle(manager, actor, args);
@@ -299,6 +303,109 @@ public final class MpTextCommands {
                     + (e.by.isBlank() ? "" : "  by " + e.by));
         }
         return out;
+    }
+
+    /**
+     * {@code /mp status}：全服连接状况的几行汇总（仅管理员）。
+     *
+     * <p>「装了客户端」的判据是「服务端手里有他的档案」：客户端进服握手（hello）时建档，下线即清，
+     * 所以它精确地等于「装了 mod 且和服务端接上了」。装了 mod 但通道没通（比如代理没转发）的人，
+     * 服务端从头到尾收不到他的任何一帧，只能和没装的人一起算进「未检测到客户端」。</p>
+     *
+     * <p>和 {@code /mp who} 的分工：who 是逐人一行的明细（百人服会刷满一屏），这里只给汇总。</p>
+     */
+    private static List<String> status(RoomManager manager) {
+        var platform = MpParty.platform();
+        if (platform == null) return List.of("一起听服务端未就绪");
+        int online = 0, withClient = 0, member = 0, contributeVip = 0, contributeLx = 0;
+        java.util.Map<String, Integer> clients = new java.util.LinkedHashMap<>();
+        java.util.Map<String, Integer> versions = new java.util.LinkedHashMap<>();
+        for (UUID uuid : platform.onlinePlayers()) {
+            online++;
+            ClientProfile p = manager.presence().get(uuid);
+            if (p == null) continue;
+            withClient++;
+            String client = p.displayName();
+            clients.merge(client, 1, Integer::sum);
+            String ver = p.modVersion == null || p.modVersion.isBlank() ? "未知版本" : p.modVersion;
+            versions.merge(client + " " + ver, 1, Integer::sum);
+            if (!p.memberSources.isEmpty()) member++;
+            if (contributesVipAnywhere(p)) contributeVip++;
+            if (p.contributeLx && p.lxChannelCount() > 0) contributeLx++;
+        }
+        List<String> out = new ArrayList<>();
+        out.add("在线 " + online + " 人：已装客户端并完成握手 " + withClient + " 人"
+                + (clients.isEmpty() ? "" : "（" + joinCounts(clients, " ", 0) + "）")
+                + "，未检测到客户端 " + (online - withClient) + " 人");
+        if (!versions.isEmpty()) out.add("客户端版本：" + joinCounts(versions, " ×", 8));
+
+        Room channel = null;
+        int roomCount = 0, roomPeople = 0;
+        for (Room r : manager.rooms()) {
+            if (r.channel()) { channel = r; continue; }
+            roomCount++;
+            for (Member m : r.members()) if (m.online) roomPeople++;
+        }
+        String ch;
+        if (!manager.config().channelEnabled) {
+            ch = "服务器频道未开启";
+        } else if (channel == null) {
+            ch = "服务器频道 0 人";
+        } else {
+            int inChannel = 0;
+            for (Member m : channel.members()) if (m.online) inChannel++;
+            ch = channel.name + " " + inChannel + " 人（在听 " + channel.listenerCount() + "）";
+        }
+        out.add("房间：" + ch + " · 私人房间 " + roomCount + " 个共 " + roomPeople + " 人"
+                + " · 自动加入" + (manager.config().channelAutoJoin ? "开" : "关"));
+        out.add("解析能力：有会员 " + member + " 人 · 贡献会员解析 " + contributeVip
+                + " 人 · 贡献 LX " + contributeLx + " 人"
+                + (manager.resolver() != null && manager.resolver().anyEnabled() ? " · 服主 Token 已配置" : ""));
+        out.add("/mp status list 列出未检测到客户端的玩家；/mp who 看每个人在听什么");
+        return out;
+    }
+
+    /** {@code /mp status list}：未检测到客户端的在线玩家，每行 10 个，方便排查谁没装或没连上。 */
+    private static List<String> statusList(RoomManager manager) {
+        var platform = MpParty.platform();
+        if (platform == null) return List.of("一起听服务端未就绪");
+        List<String> names = new ArrayList<>();
+        for (UUID uuid : platform.onlinePlayers()) {
+            if (manager.presence().get(uuid) == null) names.add(Net.nameOf(uuid));
+        }
+        if (names.isEmpty()) return List.of("所有在线玩家都已装客户端并完成握手");
+        names.sort(String.CASE_INSENSITIVE_ORDER);
+        List<String> out = new ArrayList<>();
+        out.add("未检测到客户端（" + names.size() + " 人，没装 mod 或通道没连上）：");
+        for (int i = 0; i < names.size(); i += 10) {
+            out.add(String.join("、", names.subList(i, Math.min(names.size(), i + 10))));
+        }
+        return out;
+    }
+
+    /** 愿意并且有能力替房间解析至少一个平台的完整版（与分层解析用的是同一个判据）。 */
+    private static boolean contributesVipAnywhere(ClientProfile p) {
+        if (!p.contributeVip) return false;
+        java.util.Set<String> all = new java.util.LinkedHashSet<>(p.vipSources);
+        all.addAll(p.memberSources);
+        all.addAll(p.resolvableSources);
+        for (String s : all) if (p.contributesVip(s)) return true;
+        return false;
+    }
+
+    /** 「A 3 · B 1」。按人数从多到少；limit > 0 时只列前几项，其余合成「其他」。 */
+    private static String joinCounts(java.util.Map<String, Integer> counts, String sep, int limit) {
+        List<java.util.Map.Entry<String, Integer>> list = new ArrayList<>(counts.entrySet());
+        list.sort((x, y) -> Integer.compare(y.getValue(), x.getValue()));
+        StringBuilder sb = new StringBuilder();
+        int rest = 0;
+        for (int i = 0; i < list.size(); i++) {
+            if (limit > 0 && i >= limit) { rest += list.get(i).getValue(); continue; }
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append(list.get(i).getKey()).append(sep).append(list.get(i).getValue());
+        }
+        if (rest > 0) sb.append(" · 其他").append(sep).append(rest);
+        return sb.toString();
     }
 
     /** 在线玩家和他们正在听什么 —— GUI 里那一页的命令行版本。 */
@@ -526,6 +633,7 @@ public final class MpTextCommands {
                 "/mp info | /mp queue | /mp who         房间信息 | 歌单 | 在线在听",
                 "/mp autojoin [on|off]     你自己的进服自动加入频道开关",
                 "管理员：/mp ban <玩家> <原因> <时长> | /mp unban <玩家> | /mp bans | /mp list",
+                "管理员：/mp status [list]   全服连接状况汇总（多少人装了客户端并连上）",
                 "管理员：/mp idle [save|add|on|off|shuffle|list|clear]   频道空闲歌单",
                 "管理员：/mp autojoin server <on|off>   全服：装了客户端的玩家进服自动加入频道",
                 "点歌与切歌请在音乐播放器界面操作（需安装支持一起听的客户端 mod）");
