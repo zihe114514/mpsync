@@ -29,8 +29,18 @@ public final class FabricCommands {
 
     private FabricCommands() {}
 
+    /** 注册时传进来的管理员判断，平台层（{@link FabricPlatform#isOperator}）复用它，和 /mp 指令一个口径。 */
+    private static volatile Predicate<ServerCommandSource> operatorCheck;
+
+    /** 这个指令来源是不是管理员 —— 和 /mp 指令用的是同一个判断。注册之前一律 false。 */
+    public static boolean isOperator(ServerCommandSource source) {
+        Predicate<ServerCommandSource> check = operatorCheck;
+        return check != null && source != null && check.test(source);
+    }
+
     /** @param isOperator level-2 (or higher) test for this Minecraft version */
     public static void register(Predicate<ServerCommandSource> isOperator) {
+        operatorCheck = isOperator;
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             LiteralArgumentBuilder<ServerCommandSource> root = CommandManager.literal("mp")
                     .executes(ctx -> run(ctx, isOperator, new String[0]))
@@ -53,7 +63,7 @@ public final class FabricCommands {
                 : List.of(ctx.getSource().getServer().getPlayerNames());
         int start = remaining.length() - (trailingSpace ? 0 : lastWordLength(remaining));
         SuggestionsBuilder at = builder.createOffset(builder.getStart() + start);
-        for (String s : MpTextCommands.suggest(forSuggest, names)) at.suggest(s);
+        for (String s : MpTextCommands.suggest(forSuggest, names, isOperator(ctx.getSource()))) at.suggest(s);
         return at.buildFuture();
     }
 

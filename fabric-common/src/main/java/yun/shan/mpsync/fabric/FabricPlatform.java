@@ -101,6 +101,17 @@ public final class FabricPlatform implements MpPlatform {
         LOGGER.warn(message, t);
     }
 
+    /**
+     * 与 /mp 指令同一个判据：把在线玩家转成他自己的指令来源，交给注册指令时按版本注入的那个判断。
+     * 这样握手时下发的 serverAdmin 就是对的 —— 客户端只在握手时读这一次，而 core 以前要等
+     * 管理员敲过一次 /mp 才认得他，结果频道里的管理按钮在 Fabric 上一直不出现。
+     */
+    @Override
+    public boolean isOperator(UUID uuid) {
+        ServerPlayerEntity p = player(uuid);
+        return p != null && FabricCommands.isOperator(p.getCommandSource());
+    }
+
     /** Online names, for command completion. */
     public List<String> onlineNames() {
         List<String> out = new ArrayList<>();

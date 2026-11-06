@@ -24,6 +24,11 @@ public final class NeoForgeCommands {
 
     private static final Permission LEVEL_2 = new Permission.HasCommandLevel(PermissionLevel.GAMEMASTERS);
 
+    /** 这个指令来源是不是管理员（等级 2 以上）。/mp 指令和平台层的 isOperator(UUID) 共用这一个判断。 */
+    public static boolean isOperator(CommandSourceStack source) {
+        return source != null && source.permissions().hasPermission(LEVEL_2);
+    }
+
     public static LiteralArgumentBuilder<CommandSourceStack> root() {
         return Commands.literal("mp")
                 .executes(ctx -> run(ctx, new String[0]))
@@ -42,7 +47,7 @@ public final class NeoForgeCommands {
                 : List.of(ctx.getSource().getServer().getPlayerNames());
         int start = remaining.length() - (trailingSpace ? 0 : lastWordLength(remaining));
         SuggestionsBuilder at = builder.createOffset(builder.getStart() + start);
-        for (String s : MpTextCommands.suggest(forSuggest, names)) at.suggest(s);
+        for (String s : MpTextCommands.suggest(forSuggest, names, isOperator(ctx.getSource()))) at.suggest(s);
         return at.buildFuture();
     }
 
@@ -66,7 +71,7 @@ public final class NeoForgeCommands {
     private static int run(CommandContext<CommandSourceStack> ctx, String[] args)
             throws CommandSyntaxException {
         ServerPlayer player = ctx.getSource().getPlayerOrException();
-        boolean operator = ctx.getSource().permissions().hasPermission(LEVEL_2);
+        boolean operator = isOperator(ctx.getSource());
         for (String line : MpTextCommands.run(player.getUUID(), operator, args)) {
             ctx.getSource().sendSuccess(() -> Component.literal(line), false);
         }

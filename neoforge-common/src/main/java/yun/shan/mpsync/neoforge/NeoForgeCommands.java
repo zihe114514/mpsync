@@ -21,7 +21,17 @@ public final class NeoForgeCommands {
 
     private NeoForgeCommands() {}
 
+    /** 注册时传进来的管理员判断，平台层（isOperator(UUID)）复用它，和 /mp 指令一个口径。 */
+    private static volatile Predicate<CommandSourceStack> operatorCheck;
+
+    /** 这个指令来源是不是管理员 —— 和 /mp 指令用的是同一个判断。注册之前一律 false。 */
+    public static boolean isOperator(CommandSourceStack source) {
+        Predicate<CommandSourceStack> check = operatorCheck;
+        return check != null && source != null && check.test(source);
+    }
+
     public static LiteralArgumentBuilder<CommandSourceStack> root(Predicate<CommandSourceStack> isOperator) {
+        operatorCheck = isOperator;
         return Commands.literal("mp")
                 .executes(ctx -> run(ctx, isOperator, new String[0]))
                 .then(Commands.argument("args", StringArgumentType.greedyString())
@@ -40,7 +50,7 @@ public final class NeoForgeCommands {
                 : List.of(ctx.getSource().getServer().getPlayerNames());
         int start = remaining.length() - (trailingSpace ? 0 : lastWordLength(remaining));
         SuggestionsBuilder at = builder.createOffset(builder.getStart() + start);
-        for (String s : MpTextCommands.suggest(forSuggest, names)) at.suggest(s);
+        for (String s : MpTextCommands.suggest(forSuggest, names, isOperator(ctx.getSource()))) at.suggest(s);
         return at.buildFuture();
     }
 

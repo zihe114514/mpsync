@@ -14,11 +14,12 @@ public final class MusicPartyMod implements ModInitializer {
     @Override
     public void onInitialize() {
         MpNet.register();
+        // 指令必须在这里注册：放进 SERVER_STARTING 会错过专用服务器第一次构建指令表，/mp 不存在。
+        MpCommands.register();
 
         ServerLifecycleEvents.SERVER_STARTING.register(server -> {
             OfficialPlatform platform = new OfficialPlatform(server);
             MpParty.init(platform, FabricLoader.getInstance().getConfigDir().resolve("mpsync.json"));
-            MpCommands.register(platform);
             OfficialPlatform.LOGGER.info("[mpsync] MusicParty ready — protocol v{}, channels {} / {}",
                     Proto.VERSION, Proto.C2S, Proto.S2C);
         });

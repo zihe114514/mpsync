@@ -78,6 +78,17 @@ public final class NeoForgePlatform implements MpPlatform {
 
     @Override public void warn(String message, Throwable t) { LOGGER.warn(message, t); }
 
+    /**
+     * 与 /mp 指令同一个判据：把在线玩家转成他自己的指令来源（带着他的权限），交给 {@link NeoForgeCommands#isOperator}。
+     * 这样握手时下发的 serverAdmin 就是对的 —— 客户端只在握手时读这一次，而 core 以前要等管理员敲过一次
+     * /mp 才认得他，结果频道里的管理按钮一直不出现。
+     */
+    @Override
+    public boolean isOperator(UUID uuid) {
+        ServerPlayer p = player(uuid);
+        return p != null && NeoForgeCommands.isOperator(p.createCommandSourceStack());
+    }
+
     public List<String> onlineNames() {
         List<String> out = new ArrayList<>();
         if (server == null) return out;
