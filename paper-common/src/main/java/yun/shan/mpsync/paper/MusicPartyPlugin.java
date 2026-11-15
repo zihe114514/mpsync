@@ -61,6 +61,8 @@ public final class MusicPartyPlugin extends JavaPlugin implements PluginMessageL
         MpParty.shutdown();
     }
 
+    // 1.20.1 原版服务端的客户端上行自定义数据包上限为 32767 字节
+    // 按道理来说单曲信息和普通 URL 放得下，批量歌单或很长的字段可能超限
     @Override
     public void onPluginMessageReceived(String channel, Player player, byte[] message) {
         if (!Proto.C2S.equals(channel)) return;

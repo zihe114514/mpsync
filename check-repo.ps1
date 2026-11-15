@@ -1,7 +1,7 @@
 ﻿<#
     仓库一致性自检 —— 不构建、不联网、不碰 Gradle，秒级跑完。
 
-    为什么需要它：这个仓有 20 个**互相独立**的 Gradle 构建（每个模块自带 settings.gradle
+    为什么需要它：这个仓有 35 个**互相独立**的 Gradle 构建（每个模块自带 settings.gradle
     和 wrapper），没有根工程能替它们统一口径。于是「统一配置」这件事在这里不是靠
     继承实现的，而是靠约定 + 这个脚本兜着：任何一处漂了（版本号、产物名、minecraft_version
     与目录名对不上、又被云端构建机塞进绝对路径、core 里被写进一行 net.minecraft.*），
@@ -22,9 +22,9 @@ $problems = New-Object System.Collections.Generic.List[string]
 function Add-Problem([string] $msg) { [void] $problems.Add($msg) }
 function Say([string] $msg) { if (-not $Quiet) { Write-Host $msg } }
 
-# 期望的模块矩阵：7 个游戏版本 x 4 个平台。多一个少一个都要人过一眼。
+# 期望的模块矩阵：7 个游戏版本 x 5 个目标。多一个少一个都要人过一眼。
 $mcVersions = @('1.20.1', '1.21.1', '1.21.10', '1.21.11', '26.1.2', '26.2', '26.3')
-$loaders    = @('fabric', 'forge', 'neoforge', 'paper')
+$loaders    = @('fabric', 'forge', 'neoforge', 'paper', 'javaagent')
 $expected   = foreach ($mc in $mcVersions) { foreach ($ld in $loaders) { "$mc$ld" } }
 
 # 从云端构建机 / 别人机器上带回来的东西，一律不许留在仓库里。
@@ -106,6 +106,32 @@ foreach ($m in ($actual | Sort-Object)) {
     $bgText = [System.IO.File]::ReadAllText($bg, [System.Text.Encoding]::UTF8)
     if ($bgText -notmatch '\.\./core/src/main/java') {
         Add-Problem "${m}: build.gradle 没有把 ../core/src/main/java 加进 srcDirs（core 必须只有一份实现）"
+    }
+
+    # Agent 必须编入共用注入器与平台适配，并把入口写进 manifest。
+    if ($ld -eq 'javaagent') {
+        $agentGroups = @('transform', 'platform')
+        if ($mc -eq '1.20.1') {
+            $agentGroups += 'permission-legacy'
+        } elseif ($mc -in @('1.21.1', '1.21.10')) {
+            $agentGroups += @('payload', 'resource', 'permission-legacy')
+        } else {
+            $agentGroups += @('payload', 'identifier', 'permission')
+        }
+        foreach ($shared in $agentGroups) {
+            if ($bgText -notmatch [regex]::Escape("../javaagent-common/src/$shared/java")) {
+                Add-Problem "${m}: build.gradle 没有引用 javaagent-common 的 $shared 源码"
+            }
+            if (-not (Test-Path (Join-Path $root "javaagent-common/src/$shared/java"))) {
+                Add-Problem "${m}: 共用源码目录 $shared 不存在"
+            }
+        }
+        if ($bgText -notmatch "Premain-Class['`"]?\s*:\s*['`"]yun\.shan\.mpsync\.javaagent\.JavaAgent['`"]") {
+            Add-Problem "${m}: 缺少正确的 Premain-Class"
+        }
+        if ($mc.StartsWith('1.') -and $bgText -notmatch "targetNamespace\s*=\s*['`"]official['`"]") {
+            Add-Problem "${m}: 混淆版 Agent 必须重映射到原版 official 命名空间"
+        }
     }
 
     foreach ($needle in $forbidden.Keys) {

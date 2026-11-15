@@ -83,6 +83,8 @@ public final class PaperPlatform implements MpPlatform {
         return p != null && p.getListeningPluginChannels().contains(Proto.S2C);
     }
 
+    // Paper 1.20.1 的单条插件消息上限为 32766 字节；单曲信息和普通 URL 通常放得下
+    // 但大歌单或很长的字段可能让服务端下行消息超限，发送失败
     @Override
     public void sendRaw(UUID uuid, byte[] payload) {
         Player p = uuid == null ? null : Bukkit.getPlayer(uuid);

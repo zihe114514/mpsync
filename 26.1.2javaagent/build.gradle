@@ -1,0 +1,19 @@
+plugins { id 'net.fabricmc.fabric-loom' version '1.17.20' }
+version = project.mod_version
+group = project.maven_group
+base { archivesName = project.archives_base_name }
+repositories { maven { url = 'https://maven.aliyun.com/repository/public' } }
+sourceSets.main.java.srcDirs += ['../core/src/main/java', '../javaagent-common/src/main/java', '../javaagent-common/src/transform/java', '../javaagent-common/src/platform/java', '../javaagent-common/src/payload/java', '../javaagent-common/src/identifier/java', '../javaagent-common/src/permission/java']
+configurations { agentEmbed }
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    implementation 'org.ow2.asm:asm:9.10.1'
+    agentEmbed 'org.ow2.asm:asm:9.10.1'
+}
+jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from { configurations.agentEmbed.collect { zipTree(it) } }
+    manifest { attributes 'Premain-Class': 'yun.shan.mpsync.javaagent.JavaAgent' }
+    exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'module-info.class'
+}
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8'; options.release.set(25) }

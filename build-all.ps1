@@ -1,5 +1,5 @@
 ﻿<#
-    mpsync 服务端 mod —— core 单元测试 + 二十八个目标一次全构建，产物统一汇总。
+    mpsync 服务端 mod —— core 单元测试 + 三十五个目标一次全构建，产物统一汇总。
 
     为什么需要这个脚本：所有模块都不在 gradle.properties 里钉 org.gradle.java.home
     （刻意的：那会把某台机器的绝对路径写进工程，之前 modernMP 就是这么被一条失效路径卡住的；
@@ -14,9 +14,9 @@
 
     顺序是刻意的：
       1. core-test 打头，纯 JVM 秒级跑完。房间逻辑坏了就别浪费十几分钟去构建二十个模块；
-      2. fabric / paper 八个，最快也最稳，先出货；
-      3. neoforge 四个；
-      4. forge 四个放最后（对网络和 forge_gradle 缓存最挑），挂了也不影响前面的产物。
+      2. fabric / paper 和 Java Agent 先构建；
+      3. neoforge 接着构建；
+      4. forge 放最后（对网络和 forge_gradle 缓存最挑），挂了也不影响前面的产物。
 
     用法：
       powershell -ExecutionPolicy Bypass -File .\build-all.ps1
@@ -37,10 +37,24 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-# 本机 JDK。换机器时只改这三行。
-$JDK17 = 'C:\Program Files\Java\jdk-17'
-$JDK21 = 'C:\Users\24914\.jdks\ms-21.0.12.1'
-$JDK25 = 'C:\Users\24914\.jdks\temurin-25.0.4.1'
+# 可用 MPSYNC_JDK17/21/25 覆盖；否则优先使用匹配版本的 JAVA_HOME，
+# 再查常见安装目录和原脚本的路径。只探测位置，实际运行版本仍由 Gradle 检查。
+function Find-Jdk([int] $major, [string[]] $candidates) {
+    $override = [Environment]::GetEnvironmentVariable("MPSYNC_JDK$major")
+    if ($override) { return $override }
+    $all = @($env:JAVA_HOME) + $candidates
+    foreach ($dir in $all) {
+        if (-not $dir) { continue }
+        $release = Join-Path $dir 'release'
+        if (-not (Test-Path -LiteralPath (Join-Path $dir 'bin\java.exe')) -or -not (Test-Path -LiteralPath $release)) { continue }
+        $version = [regex]::Match([System.IO.File]::ReadAllText($release), '(?m)^JAVA_VERSION="(\d+)')
+        if ($version.Success -and [int]$version.Groups[1].Value -eq $major) { return $dir }
+    }
+    return ("<未找到 JDK $major；请设置 MPSYNC_JDK$major>")
+}
+$JDK17 = Find-Jdk 17 @('C:\Program Files\Java\jdk-17', 'C:\Program Files\Microsoft\jdk-17')
+$JDK21 = Find-Jdk 21 @('C:\Program Files\Java\jdk-21', 'C:\Users\24914\.jdks\ms-21.0.12.1')
+$JDK25 = Find-Jdk 25 @('C:\Program Files\Java\jdk-25', 'C:\Users\24914\.jdks\temurin-25.0.4.1')
 
 # 模块 → 守护进程 JDK
 $targets = [ordered]@{
@@ -59,6 +73,14 @@ $targets = [ordered]@{
     '26.1.2paper'     = $JDK25
     '26.2fabric'      = $JDK25
     '26.2paper'       = $JDK25
+    # ── 原版 Java Agent：Loom 运行在 JDK 25，字节码目标由各模块设置 ──
+    '1.20.1javaagent'    = $JDK25
+    '1.21.1javaagent'    = $JDK25
+    '1.21.10javaagent'   = $JDK25
+    '1.21.11javaagent'   = $JDK25
+    '26.1.2javaagent'    = $JDK25
+    '26.2javaagent'      = $JDK25
+    '26.3javaagent'      = $JDK25
     # ── neoforge：ModDevGradle；1.20.1 那个用的其实是 Forge 系 API（NeoForge 20.1 是 Forge 的分支）
     '1.20.1neoforge'  = $JDK17
     '1.21.1neoforge'  = $JDK21
@@ -110,7 +132,7 @@ if ($Only.Count -gt 0) {
 }
 
 foreach ($jdk in ($targets.Values | Select-Object -Unique)) {
-    if (-not (Test-Path $jdk)) { throw "JDK 不存在：$jdk（改一下脚本顶部的 JDK17/21/25）" }
+    if (-not (Test-Path $jdk)) { throw "JDK 不存在：$jdk（请设置对应的 MPSYNC_JDK17/21/25）" }
 }
 
 $root = $PSScriptRoot
@@ -186,13 +208,13 @@ foreach ($name in $targets.Keys) {
         continue
     }
 
-    # 只挑「能直接丢进 mods/ 或 plugins/ 的那一个」：build/libs 里还躺着 -sources、loom 的 -dev，
+    # 只挑实际可安装的 jar（包括通过 -javaagent 加载的产物）：build/libs 里还躺着 -sources、loom 的 -dev，
     # 以及改过 archivesName 之后的旧名产物，用通配全收会把过时的 jar 也一起发出去。
     $jar = Get-ChildItem (Join-Path $root "$name\build\libs") -Filter '*.jar' -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notmatch '\-sources\.jar$|\-dev\.jar$|\-dev-shadow\.jar$|\-slim\.jar$' } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
-    if (-not $NoCollect -and $jar) {
+    if (-not $NoCollect -and $jar -and $code -eq 0) {
         # 汇总名带模块前缀：二十个 jar 平铺在一个目录里，1.21.1 与 1.21.11、forge 与 neoforge
         # 的产物名很容易看混，前缀是唯一能一眼分清来源的东西。
         $distName = "$name`__$($jar.Name)"
@@ -214,13 +236,13 @@ foreach ($name in $targets.Keys) {
 $results | Format-Table Module, Exit, Size, Built, Jar -AutoSize
 
 # ── 发版前的新旧校验 ─────────────────────────────────────────────────────────
-# core/ 与四个 *-common 是共用源码，但它们是被 srcDirs **按值拷进**每个 jar 的，
+# core/ 与各 *-common 是共用源码，但它们是被 srcDirs **按值拷进**每个 jar 的，
 # 模块之间没有任何 Gradle 依赖关系。只重建一部分模块，剩下那些 jar 里就还是旧 core，
 # 而它们会在同一个房间里通信 —— 这种「新旧混跑」实测发生过（产物目录里 8 个 jar 是新 core，
 # 两个 neoforge jar 停在一小时前的旧 core），而且不会有任何报错。所以在这里挡一道。
 $stale = @()
 if ($collecting -and (Test-Path $DistDir)) {
-    $sharedDirs = @('core', 'fabric-common', 'paper-common', 'forge-common', 'neoforge-common') |
+    $sharedDirs = @('core', 'fabric-common', 'paper-common', 'forge-common', 'neoforge-common', 'javaagent-common') |
         ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ }
     $newestShared = Get-ChildItem $sharedDirs -Recurse -Filter *.java -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1

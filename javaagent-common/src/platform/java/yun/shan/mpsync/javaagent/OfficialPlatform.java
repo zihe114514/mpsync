@@ -1,0 +1,101 @@
+package yun.shan.mpsync.javaagent;
+
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import yun.shan.mpsync.platform.MpPlatform;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Minecraft 原版服务端的平台适配，使用官方类名。
+ */
+public final class OfficialPlatform implements MpPlatform {
+
+    public static final Logger LOGGER = LoggerFactory.getLogger("mpsync");
+
+    private final MinecraftServer server;
+
+    public OfficialPlatform(MinecraftServer server) {
+        this.server = server;
+    }
+
+    private ServerPlayer player(UUID uuid) {
+        if (server == null || uuid == null) return null;
+        return server.getPlayerList().getPlayer(uuid);
+    }
+
+    @Override
+    public String nameOf(UUID uuid) {
+        ServerPlayer p = player(uuid);
+        return p == null ? null : p.getName().getString();
+    }
+
+    @Override
+    public UUID uuidByName(String name) {
+        if (server == null || name == null || name.isBlank()) return null;
+        ServerPlayer p = server.getPlayerList().getPlayerByName(name);
+        return p == null ? null : p.getUUID();
+    }
+
+    @Override
+    public Collection<UUID> onlinePlayers() {
+        List<UUID> out = new ArrayList<>();
+        if (server == null) return out;
+        for (ServerPlayer p : server.getPlayerList().getPlayers()) out.add(p.getUUID());
+        return out;
+    }
+
+    @Override
+    public boolean canSend(UUID uuid) {
+        ServerPlayer p = player(uuid);
+        return p != null && MpNet.canSend(p);
+    }
+
+    @Override
+    public void sendRaw(UUID uuid, byte[] payload) {
+        ServerPlayer p = player(uuid);
+        if (p != null && payload != null) MpNet.send(p, payload);
+    }
+
+    @Override
+    public void chat(UUID uuid, String text) {
+        ServerPlayer p = player(uuid);
+        if (p != null) p.sendSystemMessage(Component.literal(text));
+    }
+
+    @Override
+    public void execute(Runnable task) {
+        if (server == null) task.run();
+        else server.execute(task);
+    }
+
+    @Override
+    public void warn(String message, Throwable t) {
+        LOGGER.warn(message, t);
+    }
+
+    /**
+     * 与 /mp 指令同一个判据：把在线玩家转成他自己的指令来源（带着他的权限），交给 {@link MpCommands#isOperator}。
+     * 这样握手时下发的 serverAdmin 就是对的 —— 客户端只在握手时读这一次，而 core 以前要等管理员敲过一次
+     * /mp 才认得他，结果频道里的管理按钮一直不出现。
+     */
+    @Override
+    public boolean isOperator(UUID uuid) {
+        ServerPlayer p = player(uuid);
+        return p != null && MpCommands.isOperator(p.createCommandSourceStack());
+    }
+
+    public List<String> onlineNames() {
+        List<String> out = new ArrayList<>();
+        if (server == null) return out;
+        for (ServerPlayer p : server.getPlayerList().getPlayers()) out.add(p.getName().getString());
+        return out;
+    }
+}
+

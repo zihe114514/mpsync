@@ -1,14 +1,14 @@
-# 全量模块门禁：每次 push / PR 构建 7 个游戏版本 × 4 个加载器 = 28 个模块。
+# 全量模块门禁：每次 push / PR 构建 7 个游戏版本 × 5 种目标 = 35 个模块。
 #
-# 为什么这个仓值得跑全量 —— 与本地 build-all.ps1 同一个理由：core/ 与四个 *-common 不是
+# 为什么这个仓值得跑全量 —— 与本地 build-all.ps1 同一个理由：core/ 与各 *-common 不是
 # Gradle 依赖，而是被各模块 srcDirs **按值拷进**自己的 jar。于是「core 改了、某个加载器
 # 编不过」这件事在没有模块构建的地方看不出来：core-test 只编 core + gson，平台 import 静态
-# 检查只看得到 core。真正的风险面是「同一份 core 编进 20 个不同年代的工具链」——
+# 检查只看得到 core。真正的风险面是「同一份 core 编进 35 个不同年代的工具链」——
 # Yarn 名与官方名（26.x）、loom 1.7.4 与 1.17、FG6 与 FG7、release 17 与 25，这几组差异
 # 只有各自真编一遍才能确认。本地那条命令要人记得跑，这里补上机器那道。
 #
-# 20 个 job 并发跑（public 仓的 standard runner 免费且并发额度够），fail-fast 关掉：
-# 一次能看到**所有**失败的模块，而不是修一个冒一个 —— 这是 20 项矩阵最实际的价值。
+# 35 个 job 并发跑（public 仓的 standard runner 免费且并发额度够），fail-fast 关掉：
+# 一次能看到**所有**失败的模块，而不是修一个冒一个 —— 这是 35 项矩阵最实际的价值。
 #
 # 与 core-test.yml 的分工：那份仍然是最便宜的第一道闸（秒级～一分钟，不碰 MC 依赖），
 # 跑在每次 push/PR 上给最快反馈；这份是重闸。两者并行触发，互不阻塞。
@@ -21,7 +21,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# 同一分支的连续推送只留最新一次 —— PR 上尤其值得（改一行推三次，没必要建三遍 20 个模块）。
+# 同一分支的连续推送只留最新一次 —— PR 上尤其值得（改一行推三次，没必要建三遍 35 个模块）。
 # main 上不取消：主干每次提交都该留下一条完整的构建结论。
 concurrency:
   group: modules-${{ github.ref }}
@@ -56,6 +56,14 @@ jobs:
           - { module: 26.2paper,       jdk: "25", gradle: "9.6.1" }
           - { module: 26.3fabric,      jdk: "25", gradle: "9.6.1" }
           - { module: 26.3paper,       jdk: "25", gradle: "9.6.1" }
+          # ── 原版 Java Agent：Loom / Gradle 由 JDK 25 运行，字节码目标按游戏版本设置 ──
+          - { module: 1.20.1javaagent,  jdk: "25", gradle: "9.6.1" }
+          - { module: 1.21.1javaagent,  jdk: "25", gradle: "9.6.1" }
+          - { module: 1.21.10javaagent, jdk: "25", gradle: "9.6.1" }
+          - { module: 1.21.11javaagent, jdk: "25", gradle: "9.6.1" }
+          - { module: 26.1.2javaagent,  jdk: "25", gradle: "9.6.1" }
+          - { module: 26.2javaagent,    jdk: "25", gradle: "9.6.1" }
+          - { module: 26.3javaagent,    jdk: "25", gradle: "9.6.1" }
           # ── neoforge：ModDevGradle。1.20.1 那个用的其实是 Forge 系 API（NeoForge 20.1 是 Forge 的分支）──
           - { module: 1.20.1neoforge,  jdk: "17", gradle: "8.8" }
           - { module: 1.21.1neoforge,  jdk: "21", gradle: "9.6.1" }
@@ -78,8 +86,8 @@ jobs:
       jdk: ${{ matrix.jdk }}
       gradle: ${{ matrix.gradle }}
 
-  # 把 28 个模块的结论收成一句话：谁产出了什么 jar、缺了谁。
-  # 只读地汇总（不合并成发布产物 —— 那是 release.yml 的事），让「20/20」这件事在页面上有出处。
+  # 把 35 个模块的结论收成一句话：谁产出了什么 jar、缺了谁。
+  # 只读地汇总（不合并成发布产物 —— 那是 release.yml 的事），让「35/35」这件事在页面上有出处。
   summary:
     name: 汇总
     needs: build
@@ -94,13 +102,13 @@ jobs:
         run: |
           set -euo pipefail
           expected=(
-            1.20.1fabric 1.20.1forge 1.20.1neoforge 1.20.1paper
-            1.21.1fabric 1.21.1forge 1.21.1neoforge 1.21.1paper
-            1.21.10fabric 1.21.10forge 1.21.10neoforge 1.21.10paper
-            1.21.11fabric 1.21.11forge 1.21.11neoforge 1.21.11paper
-            26.1.2fabric 26.1.2forge 26.1.2neoforge 26.1.2paper
-            26.2fabric 26.2forge 26.2neoforge 26.2paper
-            26.3fabric 26.3forge 26.3neoforge 26.3paper
+            1.20.1fabric 1.20.1forge 1.20.1neoforge 1.20.1paper 1.20.1javaagent
+            1.21.1fabric 1.21.1forge 1.21.1neoforge 1.21.1paper 1.21.1javaagent
+            1.21.10fabric 1.21.10forge 1.21.10neoforge 1.21.10paper 1.21.10javaagent
+            1.21.11fabric 1.21.11forge 1.21.11neoforge 1.21.11paper 1.21.11javaagent
+            26.1.2fabric 26.1.2forge 26.1.2neoforge 26.1.2paper 26.1.2javaagent
+            26.2fabric 26.2forge 26.2neoforge 26.2paper 26.2javaagent
+            26.3fabric 26.3forge 26.3neoforge 26.3paper 26.3javaagent
           )
           {
             echo "## 模块产物"
@@ -122,4 +130,4 @@ jobs:
             echo "::error::以下模块没有产出 jar：${missing[*]}"
             exit 1
           fi
-          echo "28/28 个模块均产出可安装 jar" >> "$GITHUB_STEP_SUMMARY"
+          echo "35/35 个模块均产出可安装 jar" >> "$GITHUB_STEP_SUMMARY"

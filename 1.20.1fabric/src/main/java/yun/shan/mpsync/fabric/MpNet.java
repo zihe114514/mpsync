@@ -22,6 +22,8 @@ public final class MpNet {
     public static final Identifier C2S = new Identifier(Proto.NAMESPACE, Proto.C2S_PATH);
     public static final Identifier S2C = new Identifier(Proto.NAMESPACE, Proto.S2C_PATH);
 
+    // 1.20.1 原版服务端的客户端上行自定义数据包上限为 32767 字节
+    // 按道理来说放得下，批量歌单或很长的字段可能超限并导致断线
     public static void register() {
         ServerPlayNetworking.registerGlobalReceiver(C2S, (server, player, handler, buf, responseSender) -> {
             // Copy off the netty buffer immediately: it is released as soon as we return,

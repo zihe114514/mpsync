@@ -1,8 +1,8 @@
 # 单个模块的构建步骤 —— 由 build-modules.yml（PR/主干门禁）与 release.yml（手动发版）共用。
 #
-# 为什么不把矩阵写在这里：矩阵在两种场景下是同一份（5 个游戏版本 × 4 个加载器 = 20 个模块），
+# 为什么不把矩阵写在这里：矩阵在两种场景下是同一份（7 个游戏版本 × 5 种目标 = 35 个模块），
 # 但触发条件与后续动作不同 —— PR 上它是一道门禁，发版时它是产物来源。把「怎么构建一个模块」
-# 抽成这一份，两边都调它，20 个模块的构建口径就只有一处实现。
+# 抽成这一份，两边都调它，35 个模块的构建口径就只有一处实现。
 #
 # 与 build-all.ps1 的关系：本地那份要处理 Clash TUN + fake-ip 导致的 TLS 握手超时
 # （ForgeGradle 7 的 mavenizer 连接超时硬编码 5 秒）、腾讯云 Gradle 镜像、以及按模块钉死
@@ -55,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          # 构建只需要工作树，不要历史：20 个模块各跑一遍，fetch-depth 全量纯属浪费。
+          # 构建只需要工作树，不要历史：35 个模块各跑一遍，fetch-depth 全量纯属浪费。
           fetch-depth: 1
 
       - uses: actions/setup-java@v6.1.0
@@ -71,7 +71,7 @@ jobs:
         working-directory: ${{ inputs.module }}
         run: gradle ${{ inputs.task }} --console=plain --stacktrace
 
-      # 只挑「能直接丢进 mods/ 或 plugins/ 的那一个」。build/libs 里还躺着 -sources 与 loom 的
+      # 只挑可安装的 jar（Java Agent 通过启动参数加载）。build/libs 里还躺着 -sources 与 loom 的
       # -dev，用通配全收会把它们一起发出去 —— 与 build-all.ps1 的挑选口径保持同一条。
       # 顺带把「挑出来的到底是不是一个」断言掉：jar 名对不上（比如 archives_base_name 漂了）
       # 时这里当场红，而不是等到产物汇总了才发现少了谁。
@@ -89,6 +89,20 @@ jobs:
           jar=$(basename "${jars[0]}")
           echo "产出：$jar"
           echo "jar=$jar" >> "$GITHUB_OUTPUT"
+
+      # Java Agent 依赖 manifest 入口和打包的注入器，普通编译成功不能证明入口可加载。
+      - name: 检查 Java Agent 入口
+        if: endsWith(inputs.module, 'javaagent')
+        working-directory: ${{ inputs.module }}
+        run: |
+          set -euo pipefail
+          jar="build/libs/${{ steps.pick.outputs.jar }}"
+          manifest=$(unzip -p "$jar" META-INF/MANIFEST.MF | tr -d '\r')
+          grep -Fx 'Premain-Class: yun.shan.mpsync.javaagent.JavaAgent' <<< "$manifest"
+          jar tf "$jar" > "$RUNNER_TEMP/mpsync-jar-entries.txt"
+          grep -Fx 'yun/shan/mpsync/javaagent/JavaAgent.class' "$RUNNER_TEMP/mpsync-jar-entries.txt"
+          grep -Fx 'yun/shan/mpsync/javaagent/JavaAgentTransformer.class' "$RUNNER_TEMP/mpsync-jar-entries.txt"
+          grep -Fx 'org/objectweb/asm/ClassReader.class' "$RUNNER_TEMP/mpsync-jar-entries.txt"
 
       - uses: actions/upload-artifact@v7.0.2
         with:

@@ -1,18 +1,18 @@
-# 发版：手动触发，构建 20 个模块并把 jar 挂到 GitHub Release。
+# 发版：手动触发，构建 35 个模块并把 jar 挂到 GitHub Release。
 #
-# 为什么只手动（而不是打 tag 自动跑）—— 这是与 README 里「刻意不构建 20 个模块」相反的
-# 一个决定，理由值得写清：自动发版意味着往 main 推一个 tag 就会对外产出并上传 20 个 jar，
+# 为什么只手动（而不是打 tag 自动跑）：自动发版意味着往 main 推一个 tag
+# 就会对外产出并上传 35 个 jar，
 # 一旦某个模块在这天恰好因为上游抽风（Forge 的 sources 包、loom 快照、mods.toml 展开）
 # 编不过，发布就变成了「一半新一半旧」的产物 —— 而不同 core 版本的 jar 混在同一个房间里
 # 通信是它最怕的事（build-all.ps1 里那句「实测发生过」）。发版这一步留给人工按下去，
 # 先看一眼本机 build-all.ps1 的结论，再来这跑一遍跨环境复核。
 #
 # 用法：
-#   1. 先把 20 个 gradle.properties 的版本号抬到同一个值（check-repo.ps1 会挡不一致）；
+#   1. 先把 35 个 gradle.properties 的版本号抬到同一个值（check-repo.ps1 会挡不一致）；
 #   2. Actions → release → Run workflow；
 #   3. version 填 1.4.0，tag 留空会自动建 v1.4.0；要挂到已有 tag 就填 tag。
 #
-# 产物命名与 build-all.ps1 的汇总口径一致（`<模块>__<jar 名>`）：20 个 jar 平铺在一个
+# 产物命名与 build-all.ps1 的汇总口径一致（`<模块>__<jar 名>`）：35 个 jar 平铺在一个
 # Release 页面里，1.21.1 与 1.21.11、forge 与 neoforge 很容易看混，模块前缀是唯一能一眼
 # 分清来源的东西。README 让服主「挑与服务器完全对应的那一个」，靠的就是这个名字。
 
@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 版本号，如 1.4.0（必须与 20 个 gradle.properties 里的值一致）
+        description: 版本号，如 1.4.0（必须与 35 个 gradle.properties 里的值一致）
         required: true
         type: string
       tag:
@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   # ── 版本号自检：发版最容易犯的错是「代码是 1.4.0 而某个模块的 gradle.properties 还是 1.3.0」，
-  #    而 28 个 jar 混跑不会报错、只在房间里表现为行为不一致。先在便宜的 job 里挡住。
+  #    而 35 个 jar 混跑不会报错、只在房间里表现为行为不一致。先在便宜的 job 里挡住。
   guard:
     name: 版本号自检
     runs-on: ubuntu-latest
@@ -59,10 +59,10 @@ jobs:
             [ "$got" = "$want" ] || bad+=("$module=$got")
           done
           if [ "${#bad[@]}" -gt 0 ]; then
-            echo "::error::这些模块的版本号不是 $want：${bad[*]}（20 个 jar 必须同版，否则房间行为会不一致）"
+            echo "::error::这些模块的版本号不是 $want：${bad[*]}（35 个 jar 必须同版，否则房间行为会不一致）"
             exit 1
           fi
-          echo "28 个模块的版本号都是 $want"
+          echo "35 个模块的版本号都是 $want"
 
   build:
     needs: guard
@@ -85,6 +85,13 @@ jobs:
           - { module: 26.2paper,       jdk: "25", gradle: "9.6.1" }
           - { module: 26.3fabric,      jdk: "25", gradle: "9.6.1" }
           - { module: 26.3paper,       jdk: "25", gradle: "9.6.1" }
+          - { module: 1.20.1javaagent,  jdk: "25", gradle: "9.6.1" }
+          - { module: 1.21.1javaagent,  jdk: "25", gradle: "9.6.1" }
+          - { module: 1.21.10javaagent, jdk: "25", gradle: "9.6.1" }
+          - { module: 1.21.11javaagent, jdk: "25", gradle: "9.6.1" }
+          - { module: 26.1.2javaagent,  jdk: "25", gradle: "9.6.1" }
+          - { module: 26.2javaagent,    jdk: "25", gradle: "9.6.1" }
+          - { module: 26.3javaagent,    jdk: "25", gradle: "9.6.1" }
           - { module: 1.20.1neoforge,  jdk: "17", gradle: "8.8" }
           - { module: 1.21.1neoforge,  jdk: "21", gradle: "9.6.1" }
           - { module: 1.21.10neoforge, jdk: "21", gradle: "9.6.1" }
@@ -116,20 +123,20 @@ jobs:
           path: artifacts
 
       # 汇总成 build-all.ps1 那种 `<模块>__<jar>` 平铺布局：一个目录、一眼看清来源。
-      # 顺便再清点一次「20 个都在」——依赖 job 成功已经隐含了，但上传前这道断言很便宜，
+      # 顺便再清点一次「35 个都在」——依赖 job 成功已经隐含了，但上传前这道断言很便宜，
       # 而漏传一个 jar 的代价是服主在下载页上找不到与他服务器对应的那一个。
       - name: 汇总产物
         run: |
           set -euo pipefail
           mkdir -p dist
           expected=(
-            1.20.1fabric 1.20.1forge 1.20.1neoforge 1.20.1paper
-            1.21.1fabric 1.21.1forge 1.21.1neoforge 1.21.1paper
-            1.21.10fabric 1.21.10forge 1.21.10neoforge 1.21.10paper
-            1.21.11fabric 1.21.11forge 1.21.11neoforge 1.21.11paper
-            26.1.2fabric 26.1.2forge 26.1.2neoforge 26.1.2paper
-            26.2fabric 26.2forge 26.2neoforge 26.2paper
-            26.3fabric 26.3forge 26.3neoforge 26.3paper
+            1.20.1fabric 1.20.1forge 1.20.1neoforge 1.20.1paper 1.20.1javaagent
+            1.21.1fabric 1.21.1forge 1.21.1neoforge 1.21.1paper 1.21.1javaagent
+            1.21.10fabric 1.21.10forge 1.21.10neoforge 1.21.10paper 1.21.10javaagent
+            1.21.11fabric 1.21.11forge 1.21.11neoforge 1.21.11paper 1.21.11javaagent
+            26.1.2fabric 26.1.2forge 26.1.2neoforge 26.1.2paper 26.1.2javaagent
+            26.2fabric 26.2forge 26.2neoforge 26.2paper 26.2javaagent
+            26.3fabric 26.3forge 26.3neoforge 26.3paper 26.3javaagent
           )
           for m in "${expected[@]}"; do
             jar=$(find "artifacts/$m" -maxdepth 1 -name '*.jar' | head -1)
@@ -142,7 +149,7 @@ jobs:
       # tag 必须指向**本次正在构建的那个提交**。
       # 不自己管这件事的话，gh release create 在 tag 不存在时会拿**默认分支 HEAD** 现造一个 ——
       # 于是上传的 jar 出自代码 A、tag 指向代码 B。对本仓来说这是最怕的一类不一致
-      # （产物与源码对不上、20 个 jar 之间也可能不是同一份 core），所以这里显式判定。
+      # （产物与源码对不上、35 个 jar 之间也可能不是同一份 core），所以这里显式判定。
       #
       # 判定要区分三种情况，且**不许猜**：tag 已存在（比提交）、明确不存在（创建）、
       # 以及「不知道」—— gh 的退出码分不开 404 与一次网络抖动（本机实测两者都是退出码 1），
@@ -194,7 +201,7 @@ jobs:
             exit 1
           fi
 
-      # 发布说明按版本号生成：从上一个 tag 到现在的提交 + 20 个产物的清单。
+      # 发布说明按版本号生成：从上一个 tag 到现在的提交 + 35 个产物的清单。
       # 版本号带 v 前缀（用户填的是裸版本号，如 1.4.0）——仓库里已有的 1.3.0 tag 不带前缀，
       # 但这里从新版本起统一成 v 前缀，与 README 徽章、官网的写法一致。
       # --verify-tag：tag 必须在，绝不再让 gh 自己现造一个（那正是上面那一步要防的事）。
@@ -217,7 +224,7 @@ jobs:
           fi
           gh release create "$tag" "${args[@]}"
 
-      - name: 上传 20 个 jar
+      - name: 上传 35 个 jar
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
