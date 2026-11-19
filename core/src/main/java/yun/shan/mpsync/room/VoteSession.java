@@ -23,7 +23,8 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class VoteSession {
 
-    private static final AtomicLong SEQ = new AtomicLong(1L);
+    // 聊天历史能跨重连保留，重启后也不要从 #1 复用旧按钮的投票编号。
+    private static final AtomicLong SEQ = new AtomicLong(System.currentTimeMillis());
 
     public enum Kind {
         /** 切歌。 */
@@ -81,6 +82,10 @@ public final class VoteSession {
 
     public int cast() { return votes.size(); }
 
+    public String tally(int eligible) {
+        return eligible + " 人可投，已赞成 " + agrees() + " 票，需 " + needed(eligible) + " 票通过";
+    }
+
     /** 通过所需的最少同意票数：{@code floor(人数 × 比例) + 1}，即「严格超过这个比例」。 */
     public int needed(int eligible) {
         if (eligible <= 0) return 1;
@@ -124,7 +129,7 @@ public final class VoteSession {
     /** 一行中文描述，用于聊天广播。 */
     public String headline() {
         return kind == Kind.SKIP
-                ? initiatorName + " 想要切换歌曲《" + subject + "》"
+                ? initiatorName + " 提议跳过当前歌曲《" + subject + "》"
                 : initiatorName + " 想要踢出玩家 " + subject;
     }
 

@@ -184,8 +184,8 @@ public final class MpTextCommands {
                 }
                 return op(manager, actor, m);
             }
-            case "agree": case "同意": return vote(manager, actor, true);
-            case "deny":  case "反对": return vote(manager, actor, false);
+            case "agree": case "同意": return vote(manager, actor, args, true);
+            case "deny":  case "反对": return vote(manager, actor, args, false);
             case "vote": {
                 if (args.length < 2) return List.of("用法：/mp vote skip | /mp vote kick <玩家>");
                 JsonObject m = Proto.msg(Proto.C_VOTE_START);
@@ -238,12 +238,20 @@ public final class MpTextCommands {
         return op(manager, actor, m);
     }
 
-    /** 聊天栏参与投票。不带 voteId，投给当前那一个进行中的投票。 */
-    private static List<String> vote(RoomManager manager, UUID actor, boolean agree) {
+    /** 手输不带编号时仍投给最近一轮；按钮总是带编号，不回退到别的投票。 */
+    private static List<String> vote(RoomManager manager, UUID actor, String[] args, boolean agree) {
         Room room = manager.roomOf(actor);
         if (room == null) return List.of("你还没有加入一起听房间或频道");
-        VoteSession v = room.latestOpenVote();
-        if (v == null) return List.of("现在没有进行中的投票");
+        VoteSession v;
+        if (args.length == 1) {
+            v = room.latestOpenVote();
+            if (v == null) return List.of("现在没有进行中的投票");
+        } else {
+            long id = parseLong(args[1], 0L);
+            if (args.length != 2 || id <= 0L) return List.of("用法：/mp " + args[0] + " [投票编号]");
+            v = room.vote(id);
+            if (v == null) return List.of("这轮投票已结束或不存在");
+        }
         JsonObject m = Proto.msg(Proto.C_VOTE_CAST);
         m.addProperty("voteId", v.id);
         m.addProperty("agree", agree);
@@ -441,9 +449,8 @@ public final class MpTextCommands {
                 + "  循环：" + room.repeat().id()
                 + (room.channel() ? "" : (room.open ? "  [公开]" : "  [私密]")));
         for (VoteSession v : room.votes()) {
-            out.add("投票中：" + v.headline() + "  " + v.agrees() + "/"
-                    + v.needed(room.voteEligible()) + " 票，剩 "
-                    + (v.remainingMs() / 1000L) + " 秒 —— /mp agree 同意");
+            out.add("投票中：" + v.headline() + "（" + v.tally(room.voteEligible(v)) + "），剩 "
+                    + (v.remainingMs() / 1000L) + " 秒，赞成：/mp agree " + v.id);
         }
         QueueEntry cur = room.current();
         out.add("正在播放：" + (cur == null ? "（无）"

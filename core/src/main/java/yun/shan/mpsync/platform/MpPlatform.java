@@ -38,6 +38,11 @@ public interface MpPlatform {
     /** Plain chat line (the vanilla-visible mirror of a room event). */
     void chat(UUID uuid, String text);
 
+    /** Vanilla-visible action; platforms without rich chat show the same command to type. */
+    default void chatAction(UUID uuid, String text, String label, String command) {
+        chat(uuid, text + "  " + label + "：" + command);
+    }
+
     /** Run on the main/server thread — room state is single-threaded. */
     void execute(Runnable task);
 

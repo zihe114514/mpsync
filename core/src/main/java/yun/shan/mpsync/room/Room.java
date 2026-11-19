@@ -2155,10 +2155,15 @@ public final class Room {
         votes.add(v);
         eligible = voteEligible(v);
         broadcastVote(v);
-        // 聊天栏广播：需求要的那句话。装了播放器的成员在 GUI 里会看到一张投票卡（带按钮），
-        // 没装的人靠这一行也能参与 —— 命令和按钮走的是同一条 vote_cast。
-        Net.chatAll(members.keySet(), "[一起听] " + v.headline() + "，回「/mp agree」表示同意（"
-                + (cfg.voteWindowMs / 1000L) + " 秒内，需 " + v.needed(eligible) + "/" + eligible + " 票）");
+        String prompt = "[一起听] " + v.headline() + "（" + v.tally(eligible) + "，"
+                + (cfg.voteWindowMs / 1000L) + " 秒内有效）";
+        String command = "/mp agree " + v.id;
+        for (Member member : members.values()) {
+            if (!member.online) continue;
+            if (member.uuid.equals(initiator)) Net.chat(member.uuid, prompt + "  你的赞成票已计入");
+            else if (kindOf == VoteSession.Kind.SKIP) Net.chatAction(member.uuid, prompt, "[赞成切歌]", command);
+            else Net.chat(member.uuid, member.uuid.equals(target) ? prompt : prompt + "  赞成：" + command);
+        }
         // 发起人那一票已经算上了，可能一个人就够（比如两个人的频道里 2 票门槛只需要 2 票时不够，
         // 但 1 人频道被 voteMinMembers 挡掉了），所以立刻检查一次。
         settleIfDecided(v);
@@ -2170,6 +2175,10 @@ public final class Room {
         VoteSession v = voteId > 0 ? vote(voteId) : latestOpenVote();
         if (v == null) return "现在没有进行中的投票";
         if (!members.containsKey(uuid)) return "只有频道里的玩家可以投票";
+        if (v.expired(System.currentTimeMillis())) {
+            finishVote(v);
+            return "这轮投票已结束";
+        }
         // 当事人不参与自己的踢出投票：他不在分母里（否则 80% 永远够不到），
         // 那么他的票也不该进分子，否则「剩下多少人没投」这个账算不平。
         if (v.kind == VoteSession.Kind.KICK && uuid.equals(v.target)) {
@@ -2178,6 +2187,8 @@ public final class Room {
         if (!v.cast(uuid, agree)) return "你已经投过票了";
         broadcastVote(v);
         settleIfDecided(v);
+        if (!v.closed()) Net.chat(uuid, "[一起听] 你的" + (agree ? "赞成" : "反对") + "票已计入（"
+                + v.tally(voteEligible(v)) + "）");
         return null;
     }
 
@@ -2206,11 +2217,10 @@ public final class Room {
         votes.remove(v);
         if (v.kind == VoteSession.Kind.SKIP) {
             if (passed) {
-                notice("投票通过（" + v.agrees() + "/" + eligible + "），切到下一首");
+                notice("切歌投票通过（" + v.tally(eligible) + "），切到下一首");
                 next(false);
             } else {
-                notice("切歌投票未通过（" + v.agrees() + "/" + eligible + "，需 "
-                        + v.needed(eligible) + " 票）");
+                notice("切歌投票未通过（" + v.tally(eligible) + "）");
             }
             return;
         }

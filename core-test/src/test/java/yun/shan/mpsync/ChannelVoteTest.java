@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import yun.shan.mpsync.command.MpTextCommands;
 import yun.shan.mpsync.config.MpConfig;
 import yun.shan.mpsync.net.Proto;
 import yun.shan.mpsync.room.Room;
@@ -237,15 +238,49 @@ class ChannelVoteTest {
     }
 
     @Test
-    void chatBroadcastCarriesTheAskAndHowToAgree() {
+    void chatExplainsTheEightPlayerVoteAndProvidesTheExactCommand() {
         Room ch = channelWithEveryone();
+        UUID[] extra = new UUID[4];
+        for (int i = 0; i < extra.length; i++) manager.joinChannel(extra[i] = host.addPlayer("Guest" + i));
+        host.canSend = false; // 普通聊天不依赖客户端握手。
         ch.enqueue(admin, "Admin", playable("1", "起风了"), false);
         ch.enqueue(admin, "Admin", playable("2", "二"), false);
         host.chat.clear();
         ch.startVote(VoteSession.Kind.SKIP, a, null);
-        boolean ok = host.chat.stream().anyMatch(l ->
-                l.contains("想要切换歌曲") && l.contains("起风了") && l.contains("同意"));
-        assertTrue(ok, "需求要求把这句话广播到聊天框，实测：" + host.chat);
+        VoteSession v = ch.latestOpenVote();
+        String prompt = "[一起听] A 提议跳过当前歌曲《起风了》（8 人可投，已赞成 1 票，需 5 票通过，30 秒内有效）";
+        assertTrue(host.chat.contains(prompt + "  你的赞成票已计入"));
+        assertEquals(7, host.chat.stream().filter((prompt + "  [赞成切歌]：/mp agree " + v.id)::equals).count());
+        MpTextCommands.run(b, false, new String[]{"agree", String.valueOf(v.id)});
+        assertTrue(host.chat.stream().anyMatch(s -> s.contains("你的赞成票已计入（8 人可投，已赞成 2 票，需 5 票通过）")));
+        for (UUID voter : extra) ch.castVote(v.id, voter, false); // 剩余两人都赞成也达不到五票
+        assertTrue(host.chat.contains("[一起听] 切歌投票未通过（8 人可投，已赞成 2 票，需 5 票通过）"));
+        assertEquals("起风了", ch.current().track.name);
+    }
+
+    @Test
+    void clickingOnlyAffectsTheAdvertisedVoteOnce() {
+        Room ch = channelWithEveryone();
+        ch.enqueue(admin, "Admin", playable("1", "一"), false);
+        ch.enqueue(admin, "Admin", playable("2", "二"), false);
+        ch.startVote(VoteSession.Kind.SKIP, a, null);
+        VoteSession skip = ch.latestOpenVote();
+        String[] button = {"agree", String.valueOf(skip.id)};
+        ch.startVote(VoteSession.Kind.KICK, a, c);
+        VoteSession kick = ch.votes().get(1);
+
+        MpTextCommands.run(b, false, button);
+        MpTextCommands.run(b, false, button);
+        assertEquals(2, skip.agrees());
+        assertTrue(host.chat.stream().anyMatch(s -> s.contains("已经投过票")));
+        assertEquals(1, kick.agrees());
+        MpTextCommands.run(c, false, button);
+        assertEquals("二", ch.current().track.name);
+        assertTrue(MpTextCommands.run(admin, true, button).get(0).contains("已结束"));
+        assertTrue(MpTextCommands.run(admin, true, new String[]{"agree", "0"}).get(0).contains("用法"));
+        assertEquals(1, kick.agrees());
+        MpTextCommands.run(b, false, new String[]{"agree"}); // 手输不带编号仍然可投
+        assertEquals(2, kick.agrees());
     }
 
     @Test

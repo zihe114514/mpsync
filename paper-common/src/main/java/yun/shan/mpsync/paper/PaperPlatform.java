@@ -1,5 +1,10 @@
 package yun.shan.mpsync.paper;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -99,6 +104,16 @@ public final class PaperPlatform implements MpPlatform {
     public void chat(UUID uuid, String text) {
         Player p = uuid == null ? null : Bukkit.getPlayer(uuid);
         if (p != null) p.sendMessage(text);
+    }
+
+    @Override
+    public void chatAction(UUID uuid, String text, String label, String command) {
+        Player p = Bukkit.getPlayer(uuid);
+        if (p == null) return;
+        Component button = Component.text(label, NamedTextColor.GREEN, TextDecoration.UNDERLINED)
+                .clickEvent(ClickEvent.runCommand(command))
+                .hoverEvent(HoverEvent.showText(Component.text("点击" + label + "（" + command + "）")));
+        p.sendMessage(Component.text(text + "  ").append(button));
     }
 
     @Override

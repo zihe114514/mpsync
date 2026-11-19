@@ -109,6 +109,17 @@ public final class Net {
         for (UUID uuid : uuids) chat(uuid, text);
     }
 
+    public static void chatAction(UUID uuid, String text, String label, String command) {
+        MpPlatform p = platform;
+        if (p == null) return;
+        try {
+            p.chatAction(uuid, text, label, command);
+        } catch (RuntimeException e) {
+            p.warn("[mpsync] chat action failed", e);
+            chat(uuid, text + "  " + label + "：" + command);
+        }
+    }
+
     public static void warn(String message, Throwable t) {
         MpPlatform p = platform;
         if (p != null) p.warn(message, t);
